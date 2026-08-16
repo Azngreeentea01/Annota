@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="0.2.0"
+VERSION="0.2.1"
 VENV=".venv-macos"
 PYTHON="$VENV/bin/python"
 
@@ -50,8 +50,9 @@ if [[ -n "${MACOS_CODESIGN_IDENTITY:-}" ]]; then
     dist/Annota.app
   codesign --verify --deep --strict --verbose=2 dist/Annota.app
 else
-  echo "[Annota] No MACOS_CODESIGN_IDENTITY set; applying ad-hoc signature for local testing"
+  echo "[Annota] No MACOS_CODESIGN_IDENTITY set; applying ad-hoc signature for build verification"
   codesign --force --deep --sign - dist/Annota.app
+  codesign --verify --deep --strict --verbose=2 dist/Annota.app
 fi
 
 echo

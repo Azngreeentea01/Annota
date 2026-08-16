@@ -152,6 +152,8 @@ chmod +x build_macos.sh release_macos.sh
 
 A production macOS release must be built and acceptance-tested on the actual Mac. Screen Recording and Accessibility permissions may be required for capture, global shortcuts, and paste automation.
 
+For ARM64 release-candidate builds, `.github/workflows/macos-arm64-build.yml` uses GitHub's standard `macos-15` Apple Silicon runner. It publishes the DMG and SHA-256 directly to a GitHub prerelease and intentionally does not use Actions artifact storage. A real-Mac acceptance pass is still required before production release.
+
 ## Privacy
 Screen capture happens only after explicit annotation activation. No capture is uploaded by Annota itself. Temporary payloads use the operating system temporary directory under an `Annota` folder.
 

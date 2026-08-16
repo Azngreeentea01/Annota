@@ -1,0 +1,88 @@
+name: macOS ARM64 Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - main.py
+      - requirements.txt
+      - build_macos.sh
+      - release_macos.sh
+      - assets/**
+      - tools/**
+      - tests/**
+      - .github/workflows/macos-arm64-build.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: annota-macos-arm64-build
+  cancel-in-progress: true
+
+env:
+  ANNOTA_VERSION: "0.2.1"
+
+jobs:
+  build-macos-arm64:
+    name: Build macOS ARM64 DMG
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out Annota
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Show macOS runner environment
+        run: |
+          sw_vers
+          uname -m
+          python3 --version
+          gh --version
+
+      - name: Build and test Annota
+        run: |
+          chmod +x build_macos.sh release_macos.sh
+          ./release_macos.sh
+
+      - name: Verify app and DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCH="$(uname -m)"
+          test "$ARCH" = "arm64"
+          APP="dist/Annota.app"
+          DMG="releases/v${ANNOTA_VERSION}/Annota-v${ANNOTA_VERSION}-macOS-${ARCH}.dmg"
+          SHA="${DMG}.sha256"
+          test -d "$APP"
+          test -f "$DMG"
+          test -f "$SHA"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
+          test "$BUNDLE_ID" = "net.softwify.annota"
+          echo "Bundle identifier: $BUNDLE_ID"
+          echo "DMG: $DMG"
+          cat "$SHA"
+
+      - name: Publish macOS build as GitHub prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARCH="$(uname -m)"
+          DMG="releases/v${ANNOTA_VERSION}/Annota-v${ANNOTA_VERSION}-macOS-${ARCH}.dmg"
+          SHA="${DMG}.sha256"
+          TAG="v${ANNOTA_VERSION}-macos-rc.${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" "$DMG" "$SHA" \
+            --target "$GITHUB_SHA" \
+            --title "Annota v${ANNOTA_VERSION} macOS ARM64 RC ${GITHUB_RUN_NUMBER}" \
+            --prerelease \
+            --notes "GitHub-hosted Apple Silicon build of Annota v${ANNOTA_VERSION}. Automated tests, PyInstaller packaging, ad-hoc code-sign verification, bundle-ID verification, DMG creation, and SHA-256 generation passed on macOS ARM64. This is a release candidate and still requires real-Mac acceptance testing for Screen Recording, Accessibility, Option+Q, menu-bar behavior, Retina/multi-display behavior, and real Codex/ChatGPT insertion before production release."

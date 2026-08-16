@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="0.2.0"
+VERSION="0.2.1"
 ARCH="$(uname -m)"
 RELEASE_DIR="releases/v$VERSION"
 STAGE="$RELEASE_DIR/Annota-v$VERSION-macOS-$ARCH"
@@ -38,4 +38,4 @@ echo "macOS release package complete:"
 echo "  $DMG"
 echo "  $SHA"
 echo
-echo "Before publishing, open the DMG on a real Mac and complete the macOS acceptance checklist."
+echo "This GitHub-hosted build is a release candidate until it passes real-Mac acceptance testing."

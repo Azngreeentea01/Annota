@@ -32,6 +32,21 @@ The build script:
 6. Builds a native `.app` with PyInstaller.
 7. Applies an ad-hoc signature for local testing unless a Developer ID identity is supplied.
 
+
+## GitHub-hosted Apple Silicon build
+
+The repository includes `.github/workflows/macos-arm64-build.yml` for a native ARM64 release-candidate build on GitHub's standard `macos-15` Apple Silicon runner.
+
+The workflow:
+
+1. Checks out the repository.
+2. Selects Python 3.13.
+3. Runs `release_macos.sh`, which compiles source, runs pytest, builds `Annota.app`, verifies its code signature, and creates the DMG plus SHA-256.
+4. Verifies the bundle identifier `net.softwify.annota`.
+5. Publishes the DMG and SHA-256 directly to a GitHub prerelease.
+
+It intentionally does not use `actions/upload-artifact` or GitHub Actions artifact storage. The GitHub-hosted build is still a release candidate until the real-Mac acceptance checklist below passes.
+
 ## Developer ID signing
 
 For a distributable signed build, export your Developer ID Application identity before running the build:
@@ -50,8 +65,8 @@ export MACOS_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 Output names are architecture-specific, for example:
 
 ```text
-releases/v0.2.0/Annota-v0.2.0-macOS-arm64.dmg
-releases/v0.2.0/Annota-v0.2.0-macOS-arm64.dmg.sha256
+releases/v0.2.1/Annota-v0.2.1-macOS-arm64.dmg
+releases/v0.2.1/Annota-v0.2.1-macOS-arm64.dmg.sha256
 ```
 
 On an Intel Mac the architecture suffix will be `x86_64`.

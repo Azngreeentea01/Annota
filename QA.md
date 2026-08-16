@@ -1,7 +1,7 @@
 # Annota QA Plan
 
 ## Release gate
-Annota is not production-ready until all automated checks pass, the Windows EXE builds locally, and the full annotation workflow is manually verified on the Windows VM. No GitHub Actions, runners, artifacts, Action storage, or GitAI are used.
+Annota is not production-ready until all automated checks pass and the platform-specific acceptance gates pass. Windows builds remain local. macOS ARM64 release-candidate builds may use the GitHub-hosted macOS runner approved for this project, but the workflow must not use GitHub Actions artifact storage or GitAI.
 
 ## Core launch and background behavior
 - App starts without a visible main window.
@@ -169,6 +169,20 @@ Manually verify:
 - shortcut paused
 - clipboard changes before delayed cleanup
 - manual destination selected, then entire annotation session cancelled
+
+
+## macOS GitHub-hosted build gate
+- Workflow uses the standard GitHub-hosted `macos-15` ARM64 runner.
+- Python 3.13 is explicitly selected.
+- Full pytest suite runs before packaging.
+- `Annota.app` is built natively with PyInstaller on macOS.
+- App code signature is verified.
+- Bundle identifier is verified as `net.softwify.annota`.
+- Architecture must report `arm64`.
+- DMG and SHA-256 are generated.
+- DMG and SHA-256 are published directly to a GitHub prerelease.
+- `actions/upload-artifact` and `actions/download-artifact` are prohibited.
+- GitHub-hosted build remains a release candidate until real-Mac Screen Recording, Accessibility, Option+Q, menu-bar, Retina/multi-display, and real target-insertion acceptance tests pass.
 
 ## Packaging
 - build.bat creates one-folder Windows build.
