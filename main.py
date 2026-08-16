@@ -1014,7 +1014,7 @@ _PENDING_SEND_ROUTE: Optional[str] = None
 
 
 def classify_chat_window(title: str, executable: str = "") -> Optional[str]:
-    title_l=(title or "").strip().lower(); exe_l=(executable or "").strip().lower(); exe_name=Path(exe_l).name; is_browser=exe_name in BROWSER_EXECUTABLES; is_chatgpt_desktop="chatgpt" in exe_l and not is_browser; is_codex_process="codex" in exe_l and not is_browser
+    title_l=(title or "").strip().lower(); exe_l=(executable or "").strip().lower(); exe_name=exe_l.replace("\\", "/").rsplit("/", 1)[-1]; is_browser=exe_name in BROWSER_EXECUTABLES; is_chatgpt_desktop="chatgpt" in exe_l and not is_browser; is_codex_process="codex" in exe_l and not is_browser
     if is_codex_process: return "codex"
     if is_chatgpt_desktop and "codex" in title_l: return "codex"
     if "codex" in title_l and not is_browser: return "codex"
