@@ -1,0 +1,1146 @@
+from __future__ import annotations
+
+"""Annota - local-first Windows desktop annotation utility.
+
+Readable source-native implementation restored from the last verified Annota
+build and consolidated with the icon/text quality, Windows shell, single-instance,
+and smart Codex/ChatGPT routing updates.
+"""
+
+import ctypes
+from ctypes import wintypes
+import json
+import os
+import platform
+import queue
+import socket
+import sys
+import tempfile
+import threading
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Optional
+
+from PySide6.QtCore import QMimeData, QObject, QPoint, QRect, QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QCursor, QGuiApplication, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QSystemTrayIcon,
+    QTextEdit,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+try:
+    from pynput import keyboard
+except Exception:  # pragma: no cover
+    keyboard = None
+
+try:
+    import winreg
+except ImportError:  # pragma: no cover
+    winreg = None
+
+APP_NAME = "Annota"
+ORG_NAME = "SoftWify"
+APP_VERSION = "0.2.0"
+LAVENDER = "#B9A7FF"
+LAVENDER_DARK = "#8E68F4"
+LAVENDER_SOFT = "#EEE9FF"
+LAVENDER_PALE = "#F7F4FF"
+INK = "#211C35"
+MUTED = "#706A82"
+BORDER = "#DED7F4"
+MIN_SELECTION = 18
+HANDLE_RADIUS = 9
+INSTANCE_HOST = "127.0.0.1"
+INSTANCE_PORT = 47643
+QUICK_ANNOTATE_FLAGS = {"--annotate", "--quick-annotate"}
+SHELL_VERB_NAME = "SoftWify.Annota.Annotate"
+
+
+def _runtime_root() -> Path:
+    bundled = getattr(sys, "_MEIPASS", None)
+    return Path(bundled) if bundled else Path(__file__).resolve().parent
+
+
+ASSET_DIR = _runtime_root() / "assets"
+ICON_PATH = ASSET_DIR / "annota.svg"
+SEND_ICON_PATH = ASSET_DIR / "send.svg"
+
+APP_STYLE = r"""
+QWidget { font-family: 'Segoe UI Variable Text', 'Segoe UI', sans-serif; font-size: 10.5pt; color: #1D1930; }
+#modePill { background: #7650E8; color: #FFFFFF; border: 1px solid rgba(255,255,255,70); border-radius: 15px; padding: 11px 18px; font-size: 10.5pt; font-weight: 700; }
+#noteCard, #reviewCard, #statusToast { background: rgba(255,255,255,252); border: 2px solid #A990FA; border-radius: 16px; }
+#reviewCard { background: #FDFCFF; }
+#noteTitle { color: #1D1930; font-weight: 750; font-size: 12pt; }
+#noteMarker, #toastBadge { background: #7650E8; color: #FFFFFF; border-radius: 14px; font-weight: 800; }
+#reviewTitle { font-size: 18pt; font-weight: 800; color: #1D1930; }
+#hint, #muted, #toastDetail { color: #5D576E; font-size: 9.5pt; }
+#toastTitle { color: #1D1930; font-weight: 750; font-size: 11pt; }
+#previewCard, #notesCard, #settingsCard { background: #FFFFFF; border: 1px solid #D8CFF0; border-radius: 12px; }
+#previewImage { background: #F5F1FF; border-radius: 8px; padding: 4px; }
+QTextEdit, QLineEdit, QSpinBox { background: #FFFFFF; color: #1D1930; border: 1px solid #CFC5EC; border-radius: 9px; padding: 8px; font-size: 10.5pt; selection-background-color: #C7B7FF; selection-color: #1D1930; }
+QTextEdit:focus, QLineEdit:focus, QSpinBox:focus { border: 2px solid #7650E8; }
+#primaryButton, #sendButton, #toolbarPrimary { background: #7650E8; color: #FFFFFF; border: none; border-radius: 9px; padding: 9px 15px; font-size: 10.5pt; font-weight: 700; }
+#primaryButton:hover, #sendButton:hover, #toolbarPrimary:hover { background: #6741DB; }
+#primaryButton:pressed, #sendButton:pressed, #toolbarPrimary:pressed { background: #5934C7; }
+#secondaryButton, #toolbarButton, #iconButton { background: #FFFFFF; color: #1D1930; border: 1px solid #D5CDEE; border-radius: 9px; padding: 8px 13px; font-size: 10.25pt; font-weight: 650; }
+#secondaryButton:hover, #toolbarButton:hover, #iconButton:hover { background: #EEE9FF; }
+#toolbar { background: rgba(28,23,47,248); border: 1px solid rgba(255,255,255,48); border-radius: 13px; }
+#toolbarButton { background: transparent; color: #FFFFFF; border: none; font-weight: 700; }
+#toolbarButton:hover { background: rgba(255,255,255,24); }
+#sendRouteButton { background: #7650E8; color: #FFFFFF; border: none; border-radius: 9px; padding: 7px 6px; min-width: 28px; max-width: 32px; font-weight: 800; }
+#sendRouteButton:hover { background: #6741DB; }
+#sendRouteButton:pressed { background: #5934C7; }
+#reviewList { background: #FBFAFF; color: #1D1930; border: 1px solid #DDD6F2; border-radius: 9px; padding: 5px; outline: none; font-size: 10.25pt; }
+#reviewList::item { padding: 10px 8px; border-bottom: 1px solid #E9E4F5; }
+#reviewList::item:selected { background: #E9E1FF; color: #1D1930; border-radius: 7px; }
+#dialogTitle { font-size: 22pt; font-weight: 800; color: #1D1930; }
+#sectionTitle { font-size: 11.5pt; font-weight: 750; color: #6844D9; margin-top: 2px; }
+QDialog { background: #FDFCFF; }
+QCheckBox { spacing: 8px; font-size: 10.25pt; }
+QMenu { background: #FFFFFF; color: #1D1930; border: 1px solid #D8CFF0; padding: 6px; font-size: 10.25pt; }
+QMenu::item { padding: 8px 28px 8px 11px; border-radius: 6px; }
+QMenu::item:selected { background: #EEE9FF; color: #1D1930; }
+"""
+
+
+@dataclass
+class Annotation:
+    index: int
+    rect: tuple[int, int, int, int]
+    note: str
+
+
+class HotkeyBridge(QObject):
+    activated = Signal()
+
+
+class SubmitTextEdit(QTextEdit):
+    submitted = Signal()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not (event.modifiers() & Qt.ShiftModifier):
+            event.accept()
+            self.submitted.emit()
+            return
+        super().keyPressEvent(event)
+
+
+class StatusToast(QFrame):
+    def __init__(self, title: str, detail: str, kind=None):
+        super().__init__(None)
+        self.setObjectName("statusToast")
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedWidth(430)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(12)
+        badge = QLabel("A")
+        badge.setObjectName("toastBadge")
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setFixedSize(34, 34)
+        root.addWidget(badge)
+        text = QVBoxLayout()
+        text.setSpacing(3)
+        heading = QLabel(title)
+        heading.setObjectName("toastTitle")
+        body = QLabel(detail)
+        body.setObjectName("toastDetail")
+        body.setWordWrap(True)
+        text.addWidget(heading)
+        text.addWidget(body)
+        root.addLayout(text, 1)
+        self.setStyleSheet(APP_STYLE)
+        self.adjustSize()
+
+    def show_for(self, milliseconds: int = 4200):
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        available = screen.availableGeometry()
+        self.adjustSize()
+        self.move(available.right() - self.width() - 22, available.bottom() - self.height() - 22)
+        self.show()
+        self.raise_()
+        QTimer.singleShot(milliseconds, self.close)
+
+
+class NoteCard(QFrame):
+    saveRequested = Signal(str)
+    cancelRequested = Signal()
+
+    def __init__(self, number: int, parent=None):
+        super().__init__(parent)
+        self.setObjectName("noteCard")
+        self.setFixedWidth(300)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+        title_row = QHBoxLayout()
+        marker = QLabel(str(number))
+        marker.setObjectName("noteMarker")
+        marker.setAlignment(Qt.AlignCenter)
+        marker.setFixedSize(28, 28)
+        title = QLabel("What should change?")
+        title.setObjectName("noteTitle")
+        title_row.addWidget(marker)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        layout.addLayout(title_row)
+        self.editor = SubmitTextEdit()
+        self.editor.setPlaceholderText("Describe the change...")
+        self.editor.setFixedHeight(96)
+        self.editor.submitted.connect(self._save)
+        layout.addWidget(self.editor)
+        hint = QLabel("Drag the selection to move it. Drag a corner to resize.\nEnter saves; Shift+Enter adds a new line.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        row = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        cancel.setObjectName("secondaryButton")
+        save = QPushButton("Save note")
+        save.setObjectName("primaryButton")
+        cancel.clicked.connect(self.cancelRequested)
+        save.clicked.connect(self._save)
+        row.addStretch(1)
+        row.addWidget(cancel)
+        row.addWidget(save)
+        layout.addLayout(row)
+
+    def _save(self):
+        text = self.editor.toPlainText().strip()
+        if text:
+            self.saveRequested.emit(text)
+
+
+class ReviewCard(QFrame):
+    sendRequested = Signal()
+    addRequested = Signal()
+    closeRequested = Signal()
+
+    def __init__(self, annotations: list[Annotation], preview: QPixmap, parent=None):
+        super().__init__(parent)
+        self.setObjectName("reviewCard")
+        self.setMinimumWidth(820)
+        self.setMaximumWidth(1060)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(14)
+        head = QHBoxLayout()
+        title_stack = QVBoxLayout()
+        title_stack.setSpacing(2)
+        title = QLabel("Review your annotations")
+        title.setObjectName("reviewTitle")
+        count = len(annotations)
+        subtitle = QLabel(f"{count} change{'s' if count != 1 else ''} ready to insert into the current chat")
+        subtitle.setObjectName("muted")
+        title_stack.addWidget(title)
+        title_stack.addWidget(subtitle)
+        close = QPushButton("x")
+        close.setObjectName("iconButton")
+        close.setFixedSize(30, 30)
+        close.clicked.connect(self.closeRequested)
+        head.addLayout(title_stack)
+        head.addStretch(1)
+        head.addWidget(close)
+        root.addLayout(head)
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        preview_card = QFrame()
+        preview_card.setObjectName("previewCard")
+        preview_layout = QVBoxLayout(preview_card)
+        preview_layout.setContentsMargins(10, 10, 10, 10)
+        preview_label = QLabel()
+        preview_label.setObjectName("previewImage")
+        preview_label.setAlignment(Qt.AlignCenter)
+        preview_label.setPixmap(preview.scaled(620, 390, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        preview_layout.addWidget(preview_label)
+        body.addWidget(preview_card, 3)
+        notes_card = QFrame()
+        notes_card.setObjectName("notesCard")
+        notes_layout = QVBoxLayout(notes_card)
+        notes_layout.setContentsMargins(12, 12, 12, 12)
+        notes_layout.setSpacing(8)
+        notes_title = QLabel("Notes")
+        notes_title.setObjectName("sectionTitle")
+        notes_layout.addWidget(notes_title)
+        self.list = QListWidget()
+        self.list.setObjectName("reviewList")
+        self.list.setMinimumWidth(270)
+        self.list.setMinimumHeight(260)
+        for ann in annotations:
+            item = QListWidgetItem(f"{ann.index}.  {ann.note}")
+            item.setData(Qt.UserRole, ann.index)
+            item.setToolTip(ann.note)
+            self.list.addItem(item)
+        notes_layout.addWidget(self.list, 1)
+        body.addWidget(notes_card, 2)
+        root.addLayout(body, 1)
+        footer = QHBoxLayout()
+        add = QPushButton("+ Add another")
+        add.setObjectName("secondaryButton")
+        cancel = QPushButton("Cancel")
+        cancel.setObjectName("secondaryButton")
+        send = QPushButton("Send to Codex")
+        send.setObjectName("sendButton")
+        if SEND_ICON_PATH.exists():
+            send.setIcon(QIcon(str(SEND_ICON_PATH)))
+        send.setMinimumHeight(42)
+        add.clicked.connect(self.addRequested)
+        cancel.clicked.connect(self.closeRequested)
+        send.clicked.connect(self.sendRequested)
+        footer.addWidget(add)
+        footer.addStretch(1)
+        footer.addWidget(cancel)
+        footer.addWidget(send)
+        root.addLayout(footer)
+        _add_send_route_menu(self)
+
+
+class AnnotationOverlay(QWidget):
+    finishedCapture = Signal(str, str, str)
+
+    def __init__(self, settings: QSettings):
+        super().__init__()
+        self.settings = settings
+        self.source_app, self.source_window = active_window_context()
+        self.captured_at = datetime.now(timezone.utc)
+        self.screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        self.snapshot = self.screen.grabWindow(0)
+        self.screen_geometry = self.screen.geometry()
+        self.dpr = float(self.screen.devicePixelRatio() or 1.0)
+        self.setGeometry(self.screen_geometry)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setCursor(Qt.CrossCursor)
+        self.setMouseTracking(True)
+        self.drag_start = None
+        self.current_rect = None
+        self.pending_rect = None
+        self.annotations: list[Annotation] = []
+        self.note_card = None
+        self.review_card = None
+        self.mode = "select"
+        self.interaction = None
+        self.interaction_start = None
+        self.interaction_rect = None
+        self.mode_pill = QLabel("Annota   Annotation Mode   |   Drag to select   |   Esc to cancel", self)
+        self.mode_pill.setObjectName("modePill")
+        self.mode_pill.adjustSize()
+        self.mode_pill.move(max(20, (self.width() - self.mode_pill.width()) // 2), 22)
+        self.toolbar = QFrame(self)
+        self.toolbar.setObjectName("toolbar")
+        tl = QHBoxLayout(self.toolbar)
+        tl.setContentsMargins(10, 8, 10, 8)
+        tl.setSpacing(8)
+        self.add_btn = QPushButton("+ Add another")
+        self.review_btn = QPushButton("Review")
+        self.send_btn = QPushButton("Send")
+        self.cancel_btn = QPushButton("Cancel")
+        self.add_btn.setObjectName("toolbarButton")
+        self.review_btn.setObjectName("toolbarButton")
+        self.send_btn.setObjectName("toolbarPrimary")
+        self.cancel_btn.setObjectName("toolbarButton")
+        if SEND_ICON_PATH.exists():
+            self.send_btn.setIcon(QIcon(str(SEND_ICON_PATH)))
+        self.add_btn.clicked.connect(self._start_another)
+        self.review_btn.clicked.connect(self._show_review)
+        self.send_btn.clicked.connect(self._show_review)
+        self.cancel_btn.clicked.connect(self.close)
+        for widget in (self.add_btn, self.review_btn, self.send_btn, self.cancel_btn):
+            tl.addWidget(widget)
+        self.toolbar.adjustSize()
+        self.toolbar.hide()
+        self.setStyleSheet(APP_STYLE)
+        _add_send_route_menu(self)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.raise_()
+        self.activateWindow()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.mode_pill.adjustSize()
+        self.mode_pill.move(max(20, (self.width() - self.mode_pill.width()) // 2), 22)
+        if self.toolbar.isVisible():
+            self._position_toolbar()
+        if self.review_card and self.review_card.isVisible():
+            self._position_review()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            if self.note_card:
+                self._cancel_note()
+            elif self.review_card:
+                self._close_review()
+            else:
+                self.close()
+            return
+        if event.modifiers() & Qt.ControlModifier and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if self.annotations:
+                self._send()
+            return
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton or self.mode == "review":
+            return
+        pos = event.position().toPoint()
+        if self.pending_rect and self.mode == "adjust":
+            handle = self._hit_handle(self.pending_rect, pos)
+            if handle:
+                self.interaction = handle
+                self.interaction_start = pos
+                self.interaction_rect = QRect(self.pending_rect)
+                return
+            if self.pending_rect.contains(pos):
+                self.interaction = "move"
+                self.interaction_start = pos
+                self.interaction_rect = QRect(self.pending_rect)
+                self.setCursor(Qt.SizeAllCursor)
+                return
+            return
+        if self.mode != "select":
+            return
+        self.drag_start = pos
+        self.current_rect = QRect(pos, pos)
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        pos = event.position().toPoint()
+        if self.drag_start and self.mode == "select":
+            self.current_rect = QRect(self.drag_start, pos).normalized().intersected(self.rect())
+            self.update()
+            return
+        if self.interaction and self.pending_rect and self.interaction_start and self.interaction_rect:
+            delta = pos - self.interaction_start
+            if self.interaction == "move":
+                r = QRect(self.interaction_rect)
+                r.translate(delta)
+                self.pending_rect = self._clamp_rect(r)
+            else:
+                self.pending_rect = self._resize_from_handle(self.interaction_rect, self.interaction, pos)
+            self._position_note_card()
+            self.update()
+            return
+        if self.pending_rect and self.mode == "adjust":
+            handle = self._hit_handle(self.pending_rect, pos)
+            if handle in ("tl", "br"):
+                self.setCursor(Qt.SizeFDiagCursor)
+                return
+            if handle in ("tr", "bl"):
+                self.setCursor(Qt.SizeBDiagCursor)
+                return
+            if self.pending_rect.contains(pos):
+                self.setCursor(Qt.SizeAllCursor)
+                return
+            self.setCursor(Qt.ArrowCursor)
+            return
+        if self.mode == "select":
+            self.setCursor(Qt.CrossCursor)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return
+        if self.interaction:
+            self.interaction = None
+            self.interaction_start = None
+            self.interaction_rect = None
+            self._position_note_card()
+            return
+        if self.mode != "select" or not self.drag_start:
+            return
+        rect = QRect(self.drag_start, event.position().toPoint()).normalized().intersected(self.rect())
+        self.drag_start = None
+        self.current_rect = None
+        if rect.width() < MIN_SELECTION or rect.height() < MIN_SELECTION:
+            self.update()
+            return
+        self.pending_rect = rect
+        self.mode = "adjust"
+        self.setCursor(Qt.ArrowCursor)
+        self._show_note_card()
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawPixmap(self.rect(), self.snapshot)
+        painter.fillRect(self.rect(), QColor(12, 13, 20, 112))
+        painter.setPen(QPen(QColor(LAVENDER), 4))
+        painter.drawRect(self.rect().adjusted(2, 2, -3, -3))
+        for ann in self.annotations:
+            self._paint_selection(painter, QRect(*ann.rect), ann.index)
+        rect = self.current_rect or self.pending_rect
+        if rect:
+            self._paint_selection(painter, rect, len(self.annotations) + 1)
+        if not rect and not self.annotations and self.mode == "select":
+            center = self.rect().center()
+            painter.setPen(QPen(QColor("white"), 3))
+            painter.drawLine(center.x() - 18, center.y(), center.x() + 18, center.y())
+            painter.drawLine(center.x(), center.y() - 18, center.x(), center.y() + 18)
+
+    def _paint_selection(self, painter: QPainter, rect: QRect, number: int):
+        painter.save()
+        source = self._to_device_rect(rect)
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.drawPixmap(rect, self.snapshot, source)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        painter.setPen(QPen(QColor(LAVENDER), 3))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, 6, 6)
+        handle = 9
+        painter.setBrush(QColor("white"))
+        painter.setPen(QPen(QColor(LAVENDER_DARK), 2))
+        for pt in (rect.topLeft(), rect.topRight(), rect.bottomLeft(), rect.bottomRight()):
+            painter.drawRect(pt.x() - handle // 2, pt.y() - handle // 2, handle, handle)
+        marker_rect = QRect(rect.left() - 13, rect.top() - 13, 27, 27)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(LAVENDER_DARK))
+        painter.drawEllipse(marker_rect)
+        painter.setPen(QColor("white"))
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(marker_rect, Qt.AlignCenter, str(number))
+        painter.restore()
+
+    def _to_device_rect(self, rect: QRect) -> QRect:
+        return QRect(round(rect.x() * self.dpr), round(rect.y() * self.dpr), max(1, round(rect.width() * self.dpr)), max(1, round(rect.height() * self.dpr)))
+
+    def _hit_handle(self, rect: QRect, pos: QPoint):
+        points = {"tl": rect.topLeft(), "tr": rect.topRight(), "bl": rect.bottomLeft(), "br": rect.bottomRight()}
+        for name, pt in points.items():
+            if abs(pos.x() - pt.x()) <= HANDLE_RADIUS and abs(pos.y() - pt.y()) <= HANDLE_RADIUS:
+                return name
+        return None
+
+    def _resize_from_handle(self, original: QRect, handle: str, pos: QPoint) -> QRect:
+        left, top, right, bottom = original.left(), original.top(), original.right(), original.bottom()
+        px = max(self.rect().left(), min(pos.x(), self.rect().right()))
+        py = max(self.rect().top(), min(pos.y(), self.rect().bottom()))
+        if handle == "tl":
+            left = min(px, right - MIN_SELECTION)
+            top = min(py, bottom - MIN_SELECTION)
+        elif handle == "tr":
+            right = max(px, left + MIN_SELECTION)
+            top = min(py, bottom - MIN_SELECTION)
+        elif handle == "bl":
+            left = min(px, right - MIN_SELECTION)
+            bottom = max(py, top + MIN_SELECTION)
+        elif handle == "br":
+            right = max(px, left + MIN_SELECTION)
+            bottom = max(py, top + MIN_SELECTION)
+        return QRect(QPoint(left, top), QPoint(right, bottom)).normalized().intersected(self.rect())
+
+    def _clamp_rect(self, rect: QRect) -> QRect:
+        result = QRect(rect)
+        bounds = self.rect()
+        if result.left() < bounds.left(): result.moveLeft(bounds.left())
+        if result.top() < bounds.top(): result.moveTop(bounds.top())
+        if result.right() > bounds.right(): result.moveRight(bounds.right())
+        if result.bottom() > bounds.bottom(): result.moveBottom(bounds.bottom())
+        return result
+
+    def _show_note_card(self):
+        if not self.pending_rect:
+            return
+        self.note_card = NoteCard(len(self.annotations) + 1, self)
+        self.note_card.saveRequested.connect(self._save_note)
+        self.note_card.cancelRequested.connect(self._cancel_note)
+        self.note_card.adjustSize()
+        self._position_note_card()
+        self.note_card.show()
+        self.note_card.raise_()
+        QTimer.singleShot(0, self.note_card.editor.setFocus)
+
+    def _position_note_card(self):
+        if not self.pending_rect or not self.note_card:
+            return
+        self.note_card.adjustSize()
+        gap = 14
+        x = self.pending_rect.right() + gap
+        if x + self.note_card.width() > self.width() - 16:
+            x = max(16, self.pending_rect.left() - self.note_card.width() - gap)
+        y = min(max(70, self.pending_rect.top()), self.height() - self.note_card.height() - 24)
+        self.note_card.move(x, y)
+        self.note_card.raise_()
+
+    def _save_note(self, note: str):
+        if not self.pending_rect:
+            return
+        rect = self.pending_rect
+        self.annotations.append(Annotation(len(self.annotations) + 1, (rect.x(), rect.y(), rect.width(), rect.height()), note))
+        if self.note_card:
+            self.note_card.close()
+            self.note_card = None
+        self.pending_rect = None
+        self.mode = "select"
+        self.interaction = None
+        self.setCursor(Qt.CrossCursor)
+        self._position_toolbar()
+        self.toolbar.show()
+        self.update()
+
+    def _cancel_note(self):
+        if self.note_card:
+            self.note_card.close()
+            self.note_card = None
+        self.pending_rect = None
+        self.mode = "select"
+        self.interaction = None
+        self.setCursor(Qt.CrossCursor)
+        self.update()
+
+    def _position_toolbar(self):
+        self.toolbar.adjustSize()
+        self.toolbar.move(max(20, (self.width() - self.toolbar.width()) // 2), self.height() - self.toolbar.height() - 24)
+
+    def _start_another(self):
+        _clear_pending_send_route()
+        if self.review_card:
+            self.review_card.close()
+            self.review_card = None
+        self.mode = "select"
+        self.setCursor(Qt.CrossCursor)
+        self.toolbar.show()
+
+    def _make_review_preview(self) -> QPixmap:
+        preview = self.snapshot.copy()
+        painter = QPainter(preview)
+        scale = self.dpr
+        for ann in self.annotations:
+            logical = QRect(*ann.rect)
+            rect = QRect(round(logical.x() * scale), round(logical.y() * scale), max(1, round(logical.width() * scale)), max(1, round(logical.height() * scale)))
+            painter.setPen(QPen(QColor(LAVENDER_DARK), max(3, round(4 * scale))))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect, round(6 * scale), round(6 * scale))
+            marker_size = max(26, round(28 * scale))
+            marker = QRect(rect.left() - marker_size // 2, rect.top() - marker_size // 2, marker_size, marker_size)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(LAVENDER_DARK))
+            painter.drawEllipse(marker)
+            painter.setPen(QColor("white"))
+            font = painter.font(); font.setBold(True); font.setPixelSize(max(12, round(13 * scale))); painter.setFont(font)
+            painter.drawText(marker, Qt.AlignCenter, str(ann.index))
+        painter.end()
+        return preview
+
+    def _show_review(self):
+        if not self.annotations or self.note_card:
+            return
+        if self.review_card:
+            self.review_card.close()
+        self.review_card = ReviewCard(self.annotations, self._make_review_preview(), self)
+        self.review_card.sendRequested.connect(self._send)
+        self.review_card.addRequested.connect(self._start_another)
+        self.review_card.closeRequested.connect(self._close_review)
+        self.review_card.adjustSize()
+        self._position_review()
+        self.review_card.show(); self.review_card.raise_()
+        self.mode = "review"
+        self.setCursor(Qt.ArrowCursor)
+
+    def _position_review(self):
+        if not self.review_card:
+            return
+        self.review_card.adjustSize()
+        max_width = max(720, self.width() - 80)
+        self.review_card.setMaximumWidth(min(1060, max_width))
+        self.review_card.adjustSize()
+        x = max(24, (self.width() - self.review_card.width()) // 2)
+        y = max(60, (self.height() - self.review_card.height()) // 2)
+        self.review_card.move(x, y)
+
+    def _close_review(self):
+        _clear_pending_send_route()
+        if self.review_card:
+            self.review_card.close(); self.review_card = None
+        self.mode = "select"
+        self.setCursor(Qt.CrossCursor)
+
+    def _send(self):
+        if not self.annotations:
+            return
+        path, message, meta_path = self._build_payload()
+        self.finishedCapture.emit(path, message, meta_path)
+        self.close()
+
+    def _build_payload(self) -> tuple[str, str, str]:
+        padding_pct = int(self.settings.value("behavior/context_padding", 15))
+        union = None
+        for ann in self.annotations:
+            rect = QRect(*ann.rect)
+            union = QRect(rect) if union is None else union.united(rect)
+        assert union is not None
+        pad_x = max(24, int(union.width() * padding_pct / 100))
+        pad_y = max(24, int(union.height() * padding_pct / 100))
+        crop = union.adjusted(-pad_x, -pad_y, pad_x, pad_y).intersected(self.rect())
+        canvas = self.snapshot.copy(self._to_device_rect(crop))
+        painter = QPainter(canvas)
+        scale = self.dpr
+        for ann in self.annotations:
+            logical = QRect(*ann.rect).translated(-crop.topLeft())
+            rect = QRect(round(logical.x() * scale), round(logical.y() * scale), max(1, round(logical.width() * scale)), max(1, round(logical.height() * scale)))
+            painter.setPen(QPen(QColor(LAVENDER_DARK), max(3, round(4 * scale))))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect, round(6 * scale), round(6 * scale))
+            marker_size = max(26, round(27 * scale))
+            marker = QRect(rect.left() - marker_size // 2, rect.top() - marker_size // 2, marker_size, marker_size)
+            painter.setBrush(QColor(LAVENDER_DARK)); painter.setPen(Qt.NoPen); painter.drawEllipse(marker)
+            painter.setPen(QColor("white"))
+            font = painter.font(); font.setBold(True); font.setPixelSize(max(12, round(13 * scale))); painter.setFont(font)
+            painter.drawText(marker, Qt.AlignCenter, str(ann.index))
+        painter.end()
+        tmp_dir = Path(tempfile.gettempdir()) / "Annota"
+        tmp_dir.mkdir(exist_ok=True)
+        image_path = tmp_dir / "latest-annotation.png"
+        meta_path = tmp_dir / "latest-annotation.json"
+        text_path = tmp_dir / "latest-annotation.txt"
+        canvas.save(str(image_path), "PNG")
+        logical_size = f"{self.screen_geometry.width()}x{self.screen_geometry.height()}"
+        timestamp = datetime.now(timezone.utc).isoformat()
+        message_lines = ["UI annotation from Annota", f"Application: {self.source_app}", f"Window: {self.source_window}", f"Display: {logical_size}", f"DPI scale: {self.dpr:.2f}x", f"Timestamp: {timestamp}", ""]
+        for ann in self.annotations:
+            message_lines.append(f"{ann.index}. {ann.note}")
+        message_lines += ["", "Use the highlighted regions as the visual source of truth. Inspect the relevant code, implement these fixes, build and test locally, and visually verify the result."]
+        message = "\n".join(message_lines)
+        text_path.write_text(message, encoding="utf-8")
+        annotations_meta = []
+        for ann in self.annotations:
+            item = asdict(ann)
+            x, y, width, height = ann.rect
+            item["screen_rect"] = [x + self.screen_geometry.x(), y + self.screen_geometry.y(), width, height]
+            annotations_meta.append(item)
+        metadata = {"schema": 3, "application": self.source_app, "window_title": self.source_window, "display": logical_size, "display_geometry": [self.screen_geometry.x(), self.screen_geometry.y(), self.screen_geometry.width(), self.screen_geometry.height()], "device_pixel_ratio": self.dpr, "context_padding_percent": padding_pct, "captured_at": self.captured_at.isoformat(), "payload_created_at": timestamp, "annotations": annotations_meta, "image": str(image_path), "notes": str(text_path)}
+        meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        return str(image_path), message, str(meta_path)
+
+
+class SettingsDialog(QDialog):
+    shortcutChanged = Signal(str)
+    pauseChanged = Signal(bool)
+
+    def __init__(self, settings: QSettings, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowTitle("Annota Settings")
+        self.setWindowIcon(QIcon(str(ICON_PATH)))
+        self.setMinimumWidth(590)
+        self.setStyleSheet(APP_STYLE)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(26, 24, 26, 24); root.setSpacing(16)
+        title = QLabel("Settings"); title.setObjectName("dialogTitle"); root.addWidget(title)
+        subtitle = QLabel("Keep Annota fast, quiet, and ready when you need it."); subtitle.setObjectName("muted"); root.addWidget(subtitle)
+        shortcut_card = QFrame(); shortcut_card.setObjectName("settingsCard")
+        shortcut_layout = QVBoxLayout(shortcut_card); shortcut_layout.setContentsMargins(16,14,16,14); shortcut_layout.setSpacing(9)
+        shortcut_label = QLabel("Shortcut"); shortcut_label.setObjectName("sectionTitle")
+        hint = QLabel("Customize Quick Annotate. Annota checks Windows for common shortcut conflicts before saving."); hint.setWordWrap(True); hint.setObjectName("muted")
+        shortcut_layout.addWidget(shortcut_label); shortcut_layout.addWidget(hint)
+        row = QHBoxLayout(); self.shortcut = QLineEdit(self.settings.value("shortcut", default_shortcut())); self.shortcut.setPlaceholderText("Alt+Q")
+        reset = QPushButton("Reset"); reset.setObjectName("secondaryButton"); reset.clicked.connect(lambda: self.shortcut.setText(default_shortcut()))
+        row.addWidget(self.shortcut,1); row.addWidget(reset); shortcut_layout.addLayout(row); root.addWidget(shortcut_card)
+        behavior_card = QFrame(); behavior_card.setObjectName("settingsCard")
+        behavior_layout = QVBoxLayout(behavior_card); behavior_layout.setContentsMargins(16,14,16,14); behavior_layout.setSpacing(10)
+        behavior = QLabel("Behavior"); behavior.setObjectName("sectionTitle"); behavior_layout.addWidget(behavior)
+        self.start_login = QCheckBox("Start with Windows"); self.start_login.setChecked(self.settings.value("behavior/start_at_login",False,type=bool))
+        self.pause_shortcut = QCheckBox("Pause global shortcut"); self.pause_shortcut.setChecked(self.settings.value("behavior/pause_shortcut",False,type=bool))
+        self.clear_after = QCheckBox("Clear clipboard after insertion"); self.clear_after.setChecked(self.settings.value("behavior/clear_after_send",True,type=bool))
+        behavior_layout.addWidget(self.start_login); behavior_layout.addWidget(self.pause_shortcut); behavior_layout.addWidget(self.clear_after)
+        pad_row = QHBoxLayout(); pad_row.addWidget(QLabel("Context padding")); self.padding = QSpinBox(); self.padding.setRange(0,50); self.padding.setSuffix("%"); self.padding.setValue(int(self.settings.value("behavior/context_padding",15))); pad_row.addStretch(1); pad_row.addWidget(self.padding); behavior_layout.addLayout(pad_row); root.addWidget(behavior_card)
+        about_card = QFrame(); about_card.setObjectName("settingsCard"); about_layout = QVBoxLayout(about_card); about_layout.setContentsMargins(16,14,16,14); about_layout.setSpacing(5)
+        about_title = QLabel("About"); about_title.setObjectName("sectionTitle"); about_layout.addWidget(about_title); about_layout.addWidget(QLabel(f"Annota {APP_VERSION}  |  SoftWify  |  MIT License"))
+        privacy = QLabel("Local-first: no telemetry, no account, no continuous recording, and no cloud dependency."); privacy.setObjectName("muted"); privacy.setWordWrap(True); about_layout.addWidget(privacy); root.addWidget(about_card)
+        buttons = QHBoxLayout(); buttons.addStretch(1); cancel = QPushButton("Cancel"); cancel.setObjectName("secondaryButton"); save = QPushButton("Save settings"); save.setObjectName("primaryButton"); cancel.clicked.connect(self.reject); save.clicked.connect(self._save); buttons.addWidget(cancel); buttons.addWidget(save); root.addLayout(buttons)
+
+    def _save(self):
+        shortcut = normalize_shortcut(self.shortcut.text().strip())
+        if not shortcut:
+            QMessageBox.warning(self, APP_NAME, "Enter a valid shortcut such as Alt+Q."); return
+        current = normalize_shortcut(str(self.settings.value("shortcut", default_shortcut())))
+        if shortcut != current and shortcut_conflicts(shortcut):
+            QMessageBox.warning(self, APP_NAME, f"{shortcut} appears to be in use by Windows or another application. Choose a different shortcut."); return
+        self.settings.setValue("shortcut", shortcut)
+        self.settings.setValue("behavior/start_at_login", self.start_login.isChecked())
+        self.settings.setValue("behavior/pause_shortcut", self.pause_shortcut.isChecked())
+        self.settings.setValue("behavior/clear_after_send", self.clear_after.isChecked())
+        self.settings.setValue("behavior/context_padding", self.padding.value())
+        configure_startup(self.start_login.isChecked())
+        self.shortcutChanged.emit(shortcut); self.pauseChanged.emit(self.pause_shortcut.isChecked()); self.accept()
+
+
+class GlobalHotkey:
+    def __init__(self, callback: Callable):
+        self.callback = callback; self.listener = None; self.sequence = ""
+    def set_sequence(self, sequence: str):
+        self.stop(); self.sequence = sequence
+        if keyboard is None: return
+        spec = to_pynput_hotkey(sequence)
+        if not spec: return
+        self.listener = keyboard.GlobalHotKeys({spec: self.callback}); self.listener.start()
+    def stop(self):
+        if self.listener:
+            try: self.listener.stop()
+            except Exception: pass
+            self.listener = None
+
+
+class AnnotaApp:
+    def __init__(self, qt_app: QApplication):
+        self.app = qt_app; self.app.setQuitOnLastWindowClosed(False); self.app.setApplicationName(APP_NAME); self.app.setOrganizationName(ORG_NAME)
+        self.settings = QSettings(ORG_NAME, APP_NAME); self.overlay = None; self.settings_dialog = None; self.last_payload = None; self.toast = None
+        self.tray = QSystemTrayIcon(QIcon(str(ICON_PATH)), self.app); self.tray.setToolTip("Annota - Quick desktop annotation")
+        menu = QMenu(); self.annotate_action = QAction("", menu); self.annotate_action.triggered.connect(lambda: self.activate_annotation(force=True))
+        settings_action = QAction("Settings", menu); settings_action.triggered.connect(self.open_settings)
+        self.pause_action = QAction("Pause Shortcut", menu); self.pause_action.setCheckable(True)
+        about = QAction("About", menu); about.triggered.connect(self.show_about); quit_action = QAction("Quit", menu); quit_action.triggered.connect(self.quit)
+        menu.addAction(self.annotate_action); menu.addAction(settings_action); menu.addAction(self.pause_action); menu.addSeparator(); menu.addAction(about); menu.addAction(quit_action)
+        self.tray.setContextMenu(menu); self.tray.activated.connect(self._tray_activated); self.tray.show()
+        self.hotkey_bridge = HotkeyBridge(self.app); self.hotkey_bridge.activated.connect(self.activate_annotation); self.hotkey = GlobalHotkey(self.hotkey_bridge.activated.emit)
+        self._update_annotate_action(); self.pause_action.toggled.connect(self._pause_hotkey)
+        paused = self.settings.value("behavior/pause_shortcut", False, type=bool); self.pause_action.setChecked(paused)
+        if not paused: self.hotkey.set_sequence(self.settings.value("shortcut", default_shortcut()))
+        if self.settings.value("behavior/start_at_login", False, type=bool): configure_startup(True)
+        self._annota_command_timer = QTimer(self.app); self._annota_command_timer.setInterval(150); self._annota_command_timer.timeout.connect(lambda: _drain_instance_commands(self)); self._annota_command_timer.start()
+        if _INITIAL_QUICK_ANNOTATE: QTimer.singleShot(180, lambda: self.activate_annotation(force=True))
+
+    def _show_toast(self, title: str, detail: str, milliseconds: int = 4200):
+        if self.toast: self.toast.close()
+        self.toast = StatusToast(title, detail); self.toast.show_for(milliseconds)
+    def _update_annotate_action(self):
+        sequence = str(self.settings.value("shortcut", default_shortcut())); self.annotate_action.setText(f"Annotate Now    {sequence}")
+    def _tray_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger: self.activate_annotation(force=True)
+    def activate_annotation(self, force: bool = False):
+        if self.pause_action.isChecked() and not force: return
+        if self.overlay and self.overlay.isVisible(): self.overlay.raise_(); self.overlay.activateWindow(); return
+        self.overlay = AnnotationOverlay(self.settings); self.overlay.finishedCapture.connect(self.handle_capture); self.overlay.show(); self.overlay.raise_(); self.overlay.activateWindow()
+    def handle_capture(self, image_path: str, message: str, meta_path: str):
+        self.last_payload = (image_path, message, meta_path); self._show_toast("Sending to current chat", "Annota is inserting the screenshot first, then the matching notes.", 2600); self._send_to_current_chat(image_path, message)
+    def _send_to_current_chat(self, image_path: str, message: str):
+        global _SEND_ROUTE_OVERRIDE
+        target = find_chat_window(); route_was_clipboard = _SEND_ROUTE_OVERRIDE == "clipboard"; _SEND_ROUTE_OVERRIDE = None
+        if not target:
+            clipboard_fallback(image_path, message)
+            detail = "The annotated image and notes are on the clipboard and saved in %TEMP%\\Annota." if route_was_clipboard else "No open Codex or ChatGPT window was found. The annotated image and notes are on the clipboard and saved in %TEMP%\\Annota."
+            self._show_toast("Copied for manual paste", detail, 5600); self.tray.showMessage("Annota", "Annotation copied for manual paste.", QSystemTrayIcon.Warning, 4500); return
+        if not focus_window(target):
+            clipboard_fallback(image_path, message); self._show_toast("Copied for manual paste", "Annota could not focus the current chat. The annotated image and notes remain available locally.", 5600); self.tray.showMessage("Annota", "Could not focus the current chat. Annotation copied for manual paste.", QSystemTrayIcon.Warning, 4500); return
+        clipboard = QApplication.clipboard(); clipboard.setPixmap(QPixmap(image_path)); QTimer.singleShot(240, paste_shortcut)
+        def paste_text():
+            clipboard.setText(message); paste_shortcut(); self._show_toast("Inserted into current chat", "Screenshot and notes are ready. Review them in the composer, then send when you are satisfied.", 4600); self.tray.showMessage("Annota", "Screenshot and notes inserted. Review them before sending.", QSystemTrayIcon.Information, 3400)
+            if self.settings.value("behavior/clear_after_send", True, type=bool): QTimer.singleShot(3000, lambda: clear_if_current(message))
+        QTimer.singleShot(850, paste_text)
+    def open_settings(self):
+        self.settings_dialog = SettingsDialog(self.settings); self.settings_dialog.shortcutChanged.connect(self._update_hotkey); self.settings_dialog.pauseChanged.connect(self._set_pause_from_settings); self.settings_dialog.show(); self.settings_dialog.raise_(); self.settings_dialog.activateWindow()
+    def _update_hotkey(self, sequence: str):
+        self._update_annotate_action()
+        if not self.pause_action.isChecked(): self.hotkey.set_sequence(sequence)
+        self.tray.showMessage("Annota", f"Quick Annotate shortcut set to {sequence}.", QSystemTrayIcon.Information, 2500)
+    def _set_pause_from_settings(self, paused: bool): self.pause_action.setChecked(paused)
+    def _pause_hotkey(self, paused: bool):
+        self.settings.setValue("behavior/pause_shortcut", paused)
+        if paused: self.hotkey.stop(); return
+        self.hotkey.set_sequence(self.settings.value("shortcut", default_shortcut()))
+    def show_about(self): QMessageBox.information(None, "About Annota", f"Annota {APP_VERSION}\n\nQuick desktop annotation for visual development feedback.\n\nDefault shortcut: {default_shortcut()}\n\nNo telemetry. No account. Local-first.")
+    def quit(self):
+        self.hotkey.stop(); self._annota_command_timer.stop(); self.tray.hide(); _close_instance_socket(); self.app.quit()
+
+
+def default_shortcut() -> str: return "Option+Q" if platform.system() == "Darwin" else "Alt+Q"
+
+
+def normalize_shortcut(text: str) -> str:
+    text = text.replace(" ", "")
+    if not text: return ""
+    parts = text.split("+")
+    if len(parts) < 2: return ""
+    mods = []; key = parts[-1].upper()
+    for part in parts[:-1]:
+        lowered = part.lower()
+        if lowered in ("alt", "option"): mods.append("Option" if platform.system() == "Darwin" else "Alt")
+        elif lowered in ("ctrl", "control"): mods.append("Ctrl")
+        elif lowered == "shift": mods.append("Shift")
+        elif lowered in ("cmd", "command", "meta", "win", "windows"): mods.append("Cmd" if platform.system() == "Darwin" else "Win")
+        else: return ""
+    if len(key) != 1 and not (key.startswith("F") and key[1:].isdigit()): return ""
+    if key.startswith("F") and key[1:].isdigit() and not (1 <= int(key[1:]) <= 24): return ""
+    return "+".join(mods + [key])
+
+
+def to_pynput_hotkey(sequence: str) -> str:
+    mapping = {"alt":"<alt>", "option":"<alt>", "ctrl":"<ctrl>", "shift":"<shift>", "cmd":"<cmd>", "win":"<cmd>"}; parts = sequence.lower().split("+"); output=[]
+    for part in parts[:-1]:
+        if part not in mapping: return ""
+        output.append(mapping[part])
+    output.append(parts[-1]); return "+".join(output)
+
+
+def shortcut_conflicts(sequence: str) -> bool:
+    if platform.system() != "Windows": return False
+    normalized = normalize_shortcut(sequence)
+    if not normalized: return True
+    parts = normalized.split("+"); key = parts[-1]; modifier_flags = 0x4000
+    for modifier in parts[:-1]:
+        if modifier == "Alt": modifier_flags |= 0x0001
+        elif modifier == "Ctrl": modifier_flags |= 0x0002
+        elif modifier == "Shift": modifier_flags |= 0x0004
+        elif modifier == "Win": modifier_flags |= 0x0008
+    if len(key) == 1: virtual_key = ord(key.upper())
+    elif key.startswith("F") and key[1:].isdigit():
+        number = int(key[1:])
+        if not 1 <= number <= 24: return True
+        virtual_key = 112 + number - 1
+    else: return True
+    hotkey_id = 41242
+    try:
+        user32 = ctypes.windll.user32; registered = bool(user32.RegisterHotKey(None, hotkey_id, modifier_flags, virtual_key))
+        if registered: user32.UnregisterHotKey(None, hotkey_id); return False
+        return True
+    except Exception: return False
+
+
+def active_window_context() -> tuple[str, str]:
+    if platform.system() != "Windows": return platform.system(), "Active desktop window"
+    try:
+        user32 = ctypes.windll.user32; kernel32 = ctypes.windll.kernel32; hwnd = user32.GetForegroundWindow(); length = user32.GetWindowTextLengthW(hwnd); title_buffer = ctypes.create_unicode_buffer(length + 1); user32.GetWindowTextW(hwnd, title_buffer, length + 1); title = title_buffer.value or "Unknown window"; pid = ctypes.c_ulong(); user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)); process_name = f"PID {pid.value}"; handle = kernel32.OpenProcess(4096, False, pid.value)
+        if handle:
+            try:
+                size = ctypes.c_ulong(32768); path_buffer = ctypes.create_unicode_buffer(size.value)
+                if kernel32.QueryFullProcessImageNameW(handle, 0, path_buffer, ctypes.byref(size)): process_name = Path(path_buffer.value).name
+            finally: kernel32.CloseHandle(handle)
+        return process_name, title
+    except Exception: return "Windows", "Unknown window"
+
+
+BROWSER_EXECUTABLES = {"chrome.exe","msedge.exe","firefox.exe","brave.exe","opera.exe","opera_gx.exe","vivaldi.exe","arc.exe"}
+ROUTE_PRIORITY = ("codex","chatgpt_desktop","chatgpt_web")
+_SEND_ROUTE_OVERRIDE: Optional[str] = None
+_PENDING_SEND_ROUTE: Optional[str] = None
+
+
+def classify_chat_window(title: str, executable: str = "") -> Optional[str]:
+    title_l=(title or "").strip().lower(); exe_l=(executable or "").strip().lower(); exe_name=Path(exe_l).name; is_browser=exe_name in BROWSER_EXECUTABLES; is_chatgpt_desktop="chatgpt" in exe_l and not is_browser; is_codex_process="codex" in exe_l and not is_browser
+    if is_codex_process: return "codex"
+    if is_chatgpt_desktop and "codex" in title_l: return "codex"
+    if "codex" in title_l and not is_browser: return "codex"
+    if is_chatgpt_desktop: return "chatgpt_desktop"
+    if is_browser and ("chatgpt" in title_l or "chatgpt.com" in title_l): return "chatgpt_web"
+    if "chatgpt" in title_l and not is_browser: return "chatgpt_desktop"
+    return None
+
+
+def choose_chat_target(targets: list[dict], route: Optional[str] = None) -> Optional[int]:
+    if route == "clipboard": return None
+    wanted = ROUTE_PRIORITY if not route or route == "auto" else (route,)
+    for route_name in wanted:
+        for target in targets:
+            if target.get("route") == route_name:
+                hwnd=target.get("hwnd")
+                if isinstance(hwnd,int) and hwnd: return hwnd
+    return None
+
+
+def _process_image_path(pid: int) -> str:
+    if os.name != "nt" or not pid: return ""
+    kernel32=ctypes.windll.kernel32; handle=kernel32.OpenProcess(0x1000,False,pid)
+    if not handle: return ""
+    try:
+        size=wintypes.DWORD(32768); buffer=ctypes.create_unicode_buffer(size.value); query=kernel32.QueryFullProcessImageNameW; query.argtypes=[wintypes.HANDLE,wintypes.DWORD,wintypes.LPWSTR,ctypes.POINTER(wintypes.DWORD)]; query.restype=wintypes.BOOL
+        return buffer.value if query(handle,0,buffer,ctypes.byref(size)) else ""
+    finally: kernel32.CloseHandle(handle)
+
+
+def detect_chat_targets() -> list[dict]:
+    if os.name != "nt": return []
+    user32=ctypes.windll.user32; own_pid=os.getpid(); found=[]; EnumWindowsProc=ctypes.WINFUNCTYPE(wintypes.BOOL,wintypes.HWND,wintypes.LPARAM)
+    def callback(hwnd,_lparam):
+        if not user32.IsWindowVisible(hwnd): return True
+        length=user32.GetWindowTextLengthW(hwnd)
+        if length <= 0: return True
+        buffer=ctypes.create_unicode_buffer(length+1); user32.GetWindowTextW(hwnd,buffer,length+1); title=buffer.value.strip()
+        if not title or title.lower().startswith("annota"): return True
+        pid=wintypes.DWORD(); user32.GetWindowThreadProcessId(hwnd,ctypes.byref(pid))
+        if pid.value == own_pid: return True
+        executable=_process_image_path(pid.value); route=classify_chat_window(title,executable)
+        if route: found.append({"hwnd":int(hwnd),"title":title,"pid":int(pid.value),"executable":executable,"route":route})
+        return True
+    callback_ref=EnumWindowsProc(callback); user32.EnumWindows(callback_ref,0); return found
+
+
+def find_chat_window() -> Optional[int]: return choose_chat_target(detect_chat_targets(), _SEND_ROUTE_OVERRIDE)
+
+
+def focus_window(hwnd: int) -> bool:
+    if platform.system() != "Windows" or not hwnd: return False
+    try:
+        user32=ctypes.windll.user32; user32.ShowWindow(hwnd,9); return bool(user32.SetForegroundWindow(hwnd))
+    except Exception: return False
+
+
+def paste_shortcut():
+    if keyboard is None: return
+    try:
+        controller=keyboard.Controller(); modifier=keyboard.Key.cmd if platform.system()=="Darwin" else keyboard.Key.ctrl
+        with controller.pressed(modifier): controller.press("v"); controller.release("v")
+    except Exception: return
+
+
+def clipboard_fallback(image_path: str, message: str):
+    clipboard=QApplication.clipboard(); mime=QMimeData(); mime.setText(message); image=QPixmap(image_path).toImage(); mime.setImageData(image); clipboard.setMimeData(mime); Path(image_path).with_suffix(".txt").write_text(message,encoding="utf-8")
+
+
+def clear_if_current(text: str):
+    clipboard=QApplication.clipboard()
+    if clipboard.text()==text: clipboard.clear()
+
+
+def configure_startup(enabled: bool):
+    if platform.system() != "Windows" or winreg is None: return
+    try:
+        key_path=r"Software\Microsoft\Windows\CurrentVersion\Run"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,key_path,0,winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                executable=str(Path(sys.executable).resolve()); command=f'"{executable}"' if getattr(sys,"frozen",False) else f'"{executable}" "{Path(__file__).resolve()}"'; winreg.SetValueEx(key,APP_NAME,0,winreg.REG_SZ,command)
+            else:
+                try: winreg.DeleteValue(key,APP_NAME)
+                except FileNotFoundError: pass
+    except Exception: return
+
+
+def shell_command_for_executable(executable: str | Path) -> str: return f'"{Path(executable)}" --annotate'
+
+
+def _shell_registry_paths() -> tuple[str,...]: return (rf"Software\Classes\DesktopBackground\Shell\{SHELL_VERB_NAME}",rf"Software\Classes\Directory\Background\shell\{SHELL_VERB_NAME}")
+
+
+def install_shell_context_menu(executable: str | Path | None = None) -> bool:
+    if os.name != "nt" or winreg is None: return False
+    if executable is None:
+        if not getattr(sys,"frozen",False): return False
+        executable=sys.executable
+    exe=str(Path(executable).resolve()); command=shell_command_for_executable(exe)
+    try:
+        for base_path in _shell_registry_paths():
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER,base_path) as key:
+                winreg.SetValueEx(key,"MUIVerb",0,winreg.REG_SZ,"Annota"); winreg.SetValueEx(key,"Icon",0,winreg.REG_SZ,exe); winreg.SetValueEx(key,"Position",0,winreg.REG_SZ,"Top")
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER,base_path+r"\command") as key: winreg.SetValueEx(key,"",0,winreg.REG_SZ,command)
+        return True
+    except OSError: return False
+
+
+_COMMAND_QUEUE: "queue.Queue[str]" = queue.Queue()
+_INSTANCE_SOCKET: Optional[socket.socket] = None
+_INSTANCE_THREAD: Optional[threading.Thread] = None
+_INITIAL_QUICK_ANNOTATE = any(arg.lower() in QUICK_ANNOTATE_FLAGS for arg in sys.argv[1:])
+
+
+def _instance_listener(sock: socket.socket):
+    while True:
+        try: data,_addr=sock.recvfrom(128)
+        except OSError: return
+        command=data.decode("utf-8",errors="ignore").strip().lower()
+        if command: _COMMAND_QUEUE.put(command)
+
+
+def _start_or_forward_instance() -> bool:
+    global _INSTANCE_SOCKET,_INSTANCE_THREAD
+    sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    try: sock.bind((INSTANCE_HOST,INSTANCE_PORT))
+    except OSError:
+        sock.close()
+        if _INITIAL_QUICK_ANNOTATE:
+            try:
+                sender=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); sender.sendto(b"annotate",(INSTANCE_HOST,INSTANCE_PORT)); sender.close()
+            except OSError: pass
+        return False
+    _INSTANCE_SOCKET=sock; _INSTANCE_THREAD=threading.Thread(target=_instance_listener,args=(sock,),daemon=True); _INSTANCE_THREAD.start(); return True
+
+
+def _drain_instance_commands(app):
+    while True:
+        try: command=_COMMAND_QUEUE.get_nowait()
+        except queue.Empty: return
+        if command=="annotate": app.activate_annotation(force=True)
+
+
+def _close_instance_socket():
+    global _INSTANCE_SOCKET
+    if _INSTANCE_SOCKET is not None:
+        try: _INSTANCE_SOCKET.close()
+        except OSError: pass
+        _INSTANCE_SOCKET=None
+
+
+def _find_layout_containing(layout,widget):
+    if layout is None: return None
+    try: count=layout.count()
+    except Exception: return None
+    for index in range(count):
+        item=layout.itemAt(index)
+        if item.widget() is widget: return layout
+        child_layout=item.layout()
+        if child_layout is not None:
+            result=_find_layout_containing(child_layout,widget)
+            if result is not None: return result
+    return None
+
+
+def _apply_pending_send_route(*_args):
+    global _SEND_ROUTE_OVERRIDE
+    _SEND_ROUTE_OVERRIDE=_PENDING_SEND_ROUTE
+
+
+def _clear_pending_send_route(*_args):
+    global _SEND_ROUTE_OVERRIDE,_PENDING_SEND_ROUTE
+    _SEND_ROUTE_OVERRIDE=None; _PENDING_SEND_ROUTE=None
+
+
+def _send_with_override(button: QPushButton,route: str):
+    global _PENDING_SEND_ROUTE
+    _PENDING_SEND_ROUTE=route; button.click()
+
+
+def _add_send_route_menu(root):
+    if root.property("annotaRouteMenuAdded"): return
+    buttons=root.findChildren(QPushButton); send_button=next((b for b in buttons if b.text().strip() in {"Send","Send to Codex"}),None)
+    if send_button is None: return
+    send_button.setText("Send"); send_button.setToolTip("Send automatically: Codex, then ChatGPT desktop, then ChatGPT web")
+    if isinstance(root,ReviewCard):
+        send_button.pressed.connect(_apply_pending_send_route); send_button.clicked.connect(_clear_pending_send_route)
+        for exit_button in buttons:
+            if exit_button is not send_button and exit_button.text().strip() in {"Cancel","+ Add another","x"}: exit_button.clicked.connect(_clear_pending_send_route)
+        root.destroyed.connect(_clear_pending_send_route)
+    parent=send_button.parentWidget(); layout=_find_layout_containing(parent.layout() if parent else None,send_button)
+    if layout is None: layout=_find_layout_containing(root.layout(),send_button)
+    if layout is None: return
+    route_button=QToolButton(parent or root); route_button.setObjectName("sendRouteButton"); route_button.setText(chr(0x25BE)); route_button.setToolTip("Choose where this annotation is sent"); route_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+    menu=QMenu(route_button)
+    for label,route in (("Send to Codex","codex"),("Send to ChatGPT desktop","chatgpt_desktop"),("Send to ChatGPT web","chatgpt_web")):
+        action=menu.addAction(label); action.triggered.connect(lambda _checked=False,r=route,b=send_button:_send_with_override(b,r))
+    menu.addSeparator(); copy_action=menu.addAction("Copy for manual paste"); copy_action.triggered.connect(lambda _checked=False,b=send_button:_send_with_override(b,"clipboard")); route_button.setMenu(menu)
+    layout.insertWidget(layout.indexOf(send_button)+1,route_button); root.setProperty("annotaRouteMenuAdded",True); root._annota_route_button=route_button
+
+
+def main() -> int:
+    if not _start_or_forward_instance(): return 0
+    install_shell_context_menu(); os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING","1"); app=QApplication(sys.argv); app.setStyleSheet(APP_STYLE); app.setWindowIcon(QIcon(str(ICON_PATH))); controller=AnnotaApp(app); app._annota_controller=controller; return app.exec()
+
+
+if __name__ == "__main__": raise SystemExit(main())

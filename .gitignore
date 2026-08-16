@@ -1,0 +1,15 @@
+.venv/
+.venv-macos/
+__pycache__/
+.pytest_cache/
+*.pyc
+build/
+dist/
+*.spec
+*.log
+.DS_Store
+Thumbs.db
+assets/annota.icns
+releases/**/*.zip
+releases/**/*.dmg
+releases/**/*.sha256
