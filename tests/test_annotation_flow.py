@@ -74,7 +74,9 @@ def test_manual_route_selection_changes_button_without_triggering_review():
     card.editor.setPlainText("Use a larger icon")
 
     route = _route_button(card)
-    codex_action = next(action for action in route.menu().actions() if action.text() == "Send to Codex")
+    codex_action = next(
+        action for action in route.menu().actions() if action.text() == "Send to Codex"
+    )
     codex_action.trigger()
 
     assert _button(card, "Send to Codex")
@@ -87,7 +89,9 @@ def test_selected_route_carries_into_review_and_only_review_commits_it():
     _app()
     note_card = main.NoteCard(1)
     route = _route_button(note_card)
-    web_action = next(action for action in route.menu().actions() if action.text() == "Send to ChatGPT web")
+    web_action = next(
+        action for action in route.menu().actions() if action.text() == "Send to ChatGPT web"
+    )
     web_action.trigger()
     assert main._PENDING_SEND_ROUTE == "chatgpt_web"
     assert main._SEND_ROUTE_OVERRIDE is None
@@ -118,7 +122,9 @@ def test_review_can_reset_manual_route_back_to_auto_send():
     assert _button(review, "Send to Codex")
 
     route = _route_button(review)
-    auto_action = next(action for action in route.menu().actions() if action.text() == "Auto Send (Recommended)")
+    auto_action = next(
+        action for action in route.menu().actions() if action.text() == "Auto Send (Recommended)"
+    )
     auto_action.trigger()
 
     assert _button(review, "Auto Send")

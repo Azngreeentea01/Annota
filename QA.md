@@ -124,7 +124,10 @@ Acceptance requirements:
 - Structured comments are pasted second.
 - Annota never presses the final chat Send button.
 - Sending state uses an Annota lavender status toast.
-- Success state confirms insertion and reminds user to review.
+- Windows success state confirms insertion and reminds user to review.
+- macOS success state says paste was requested, not guaranteed, because the destination app does not provide reliable paste acceptance confirmation.
+- macOS automatic insertion uses native Quartz Command+V events and rechecks Accessibility/Post Event readiness before each automatic send.
+- If macOS image or notes paste cannot be issued, the failure reason is surfaced and clipboard/manual-paste recovery remains available.
 - If no requested chat target exists, a clipboard fallback is created.
 - PNG, TXT, and JSON remain available locally.
 - No annotation is silently lost.
@@ -133,7 +136,8 @@ Acceptance requirements:
 - Shortcut can be changed and reset.
 - Start with Windows writes/removes the current-user startup entry.
 - Pause shortcut persists.
-- Clear clipboard after insertion persists.
+- Windows Clear clipboard after insertion persists.
+- macOS intentionally keeps notes on the clipboard after automatic paste attempts as a recovery path.
 - Context padding 0-50% persists.
 - About section shows version, brand, license, and privacy statement.
 
@@ -215,6 +219,7 @@ Manually verify:
 - macOS app classification and source-browser routing tests.
 - macOS startup/permission/tray lifetime source contracts.
 - Direct macOS Settings/Quick Capture controls and native hotkey helper source/build contracts.
+- macOS native Quartz paste, denied-permission behavior, clipboard safety fallback, and send-status regression tests.
 - Packaged macOS runtime `--self-test` and timed `--smoke-test` are required in GitHub QA.
 
 ## Windows 11 acceptance results - v0.2.0 baseline - 2026-08-16
@@ -281,17 +286,17 @@ Reason: v0.2.1 built successfully but failed physical-Mac use. A successful DMG 
 
 Changes required before the next production Mac release:
 - Keep the QSystemTrayIcon context menu alive for the full process lifetime (`self.tray_menu`).
-- Show a visible macOS setup window when Screen Recording or Accessibility is missing.
+- Show a visible macOS setup window on first run and whenever Screen Recording permission is missing; Accessibility remains an automatic-paste permission, not a Quick Capture prerequisite.
 - Provide Start Annotation without relying on Option+Q.
 - Preflight/request Screen Recording before capture rather than silently producing a bad capture.
-- Preflight/request Accessibility before relying on the global shortcut or synthetic paste.
+- Do not require Accessibility for Quick Capture. Preflight/request Accessibility/Post Event permission only for native Quartz automatic paste.
 - Provide direct links to macOS Privacy & Security panes.
 - Support macOS Start at login with a per-user LaunchAgent.
 - Preserve safe clipboard fallback if a target cannot be focused or permissions are incomplete.
 - Add native macOS running-app classification for Codex/ChatGPT and safe source-browser reuse for an explicit web route.
 - Run packaged self-test and launch smoke test on the GitHub Apple Silicon runner before DMG publication.
 
-Current local source gate: Python compile PASS; 39 tests PASS on Windows. Physical-Mac acceptance remains required before converting the RC into a production release.
+Current local source gate: Ruff lint/format PASS; Python compile PASS; 57 tests PASS on Windows. Physical-Mac acceptance remains required before converting the RC into a production release.
 
 
 ## macOS Quick Capture recovery QA - v0.2.2
@@ -301,3 +306,15 @@ Current local source gate: Python compile PASS; 39 tests PASS on Windows. Physic
 - macOS capture activation now prefers a bundled native Swift/Carbon `RegisterEventHotKey` helper instead of pynput keyboard monitoring.
 - Accessibility is no longer treated as a prerequisite for the capture shortcut; it remains relevant to automatic paste.
 - GitHub Apple Silicon QA must compile the helper, successfully register Option+Q, package the helper inside Annota.app, pass runtime self-test, pass app launch smoke test, sign the bundle, build the DMG, and generate SHA-256 before another RC is published.
+
+
+## macOS automatic-send recovery QA - v0.2.2
+- Physical-Mac feedback: permissions could appear granted while automatic send still failed or appeared to do nothing.
+- macOS automatic paste no longer uses pynput; it posts native Quartz `Command+V` keyboard events.
+- Accessibility/Post Event permission is checked immediately before automatic insertion.
+- Destination activation is given a short settling delay before the screenshot paste is attempted.
+- Screenshot paste and notes paste are handled separately, and each reports failure instead of silently continuing.
+- When automatic insertion is unavailable, PNG/TXT/JSON remain local and the annotation is copied for manual paste.
+- After a successful macOS paste request, notes remain on the clipboard because macOS cannot reliably confirm that the destination accepted synthetic input.
+- Apple Events are not used, so Automation permission is not part of the required Annota permission set.
+- Automated regression coverage includes denied permission, Quartz Command+V event construction/posting, native backend routing, setup fallback status, and fail-safe source contracts.

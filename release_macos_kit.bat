@@ -20,6 +20,8 @@ mkdir "%STAGE%\tools" >nul 2>nul
 
 copy /Y "main.py" "%STAGE%\main.py" >nul
 copy /Y "requirements.txt" "%STAGE%\requirements.txt" >nul
+copy /Y "requirements-dev.txt" "%STAGE%\requirements-dev.txt" >nul
+copy /Y "pyproject.toml" "%STAGE%\pyproject.toml" >nul
 copy /Y "README.md" "%STAGE%\README.md" >nul
 copy /Y "QA.md" "%STAGE%\QA.md" >nul
 copy /Y "LICENSE" "%STAGE%\LICENSE" >nul

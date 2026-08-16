@@ -1,14 +1,12 @@
-from __future__ import annotations
+"""Annota - local-first desktop annotation utility for Windows and macOS.
 
-"""Annota - local-first Windows desktop annotation utility.
-
-Readable source-native implementation restored from the last verified Annota
-build and consolidated with the icon/text quality, Windows shell, single-instance,
-and smart Codex/ChatGPT routing updates.
+The module contains the small Qt desktop application, platform integration,
+annotation workflow, payload generation, and safe Codex/ChatGPT routing.
 """
 
+from __future__ import annotations
+
 import ctypes
-from ctypes import wintypes
 import json
 import os
 import platform
@@ -19,13 +17,35 @@ import subprocess
 import sys
 import tempfile
 import threading
+from collections.abc import Callable
+from contextlib import suppress
+from ctypes import wintypes
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
 
-from PySide6.QtCore import QMimeData, QObject, QPoint, QRect, QSettings, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import (
+    QMimeData,
+    QObject,
+    QPoint,
+    QRect,
+    QSettings,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+)
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QCursor,
+    QDesktopServices,
+    QGuiApplication,
+    QIcon,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -62,11 +82,6 @@ ORG_NAME = "SoftWify"
 APP_VERSION = "0.2.2"
 LAVENDER = "#B9A7FF"
 LAVENDER_DARK = "#8E68F4"
-LAVENDER_SOFT = "#EEE9FF"
-LAVENDER_PALE = "#F7F4FF"
-INK = "#211C35"
-MUTED = "#706A82"
-BORDER = "#DED7F4"
 MIN_SELECTION = 18
 HANDLE_RADIUS = 9
 INSTANCE_HOST = "127.0.0.1"
@@ -84,6 +99,44 @@ ASSET_DIR = _runtime_root() / "assets"
 ICON_PATH = ASSET_DIR / "annota.svg"
 SEND_ICON_PATH = ASSET_DIR / "send.svg"
 HOTKEY_HELPER_PATH = _runtime_root() / "annota_hotkey"
+
+DIAGNOSTIC_FILE_ENV = "ANNOTA_DIAGNOSTIC_FILE"
+
+
+def _diagnostic_event(event: str, **fields) -> None:
+    """Append a local JSONL runtime event when diagnostics are explicitly enabled."""
+    target = os.environ.get(DIAGNOSTIC_FILE_ENV, "").strip()
+    if not target:
+        return
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "pid": os.getpid(),
+        "event": event,
+        **fields,
+    }
+    try:
+        output = Path(target)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError:
+        return
+
+
+def _widget_diagnostic_controls(widget: QWidget) -> dict[str, list[int]]:
+    """Return overlay-relative geometry for visible buttons in a diagnostic event."""
+    controls: dict[str, list[int]] = {}
+    origin = widget.mapTo(widget.window(), QPoint(0, 0))
+    children = [*widget.findChildren(QPushButton), *widget.findChildren(QToolButton)]
+    for child in children:
+        if not child.isVisible():
+            continue
+        label = child.text().strip() or child.objectName()
+        pos = child.mapTo(widget.window(), QPoint(0, 0))
+        controls[label] = [pos.x(), pos.y(), child.width(), child.height()]
+    controls["__widget__"] = [origin.x(), origin.y(), widget.width(), widget.height()]
+    return controls
+
 
 APP_STYLE = r"""
 QWidget { font-family: '.AppleSystemUIFont', 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', sans-serif; font-size: 10.5pt; color: #1D1930; }
@@ -138,7 +191,9 @@ class SubmitTextEdit(QTextEdit):
     submitted = Signal()
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not (event.modifiers() & Qt.ShiftModifier):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not (
+            event.modifiers() & Qt.ShiftModifier
+        ):
             event.accept()
             self.submitted.emit()
             return
@@ -299,7 +354,9 @@ class ReviewCard(QFrame):
         preview_label = QLabel()
         preview_label.setObjectName("previewImage")
         preview_label.setAlignment(Qt.AlignCenter)
-        preview_label.setPixmap(preview.scaled(620, 390, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        preview_label.setPixmap(
+            preview.scaled(620, 390, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        )
         preview_layout.addWidget(preview_label)
         body.addWidget(preview_card, 3)
 
@@ -376,7 +433,9 @@ class AnnotationOverlay(QWidget):
         self.interaction = None
         self.interaction_start = None
         self.interaction_rect = None
-        self.mode_pill = QLabel("Annota   Annotation Mode   |   Drag to select   |   Esc to cancel", self)
+        self.mode_pill = QLabel(
+            "Annota   Annotation Mode   |   Drag to select   |   Esc to cancel", self
+        )
         self.mode_pill.setObjectName("modePill")
         self.mode_pill.adjustSize()
         self.mode_pill.move(max(20, (self.width() - self.mode_pill.width()) // 2), 22)
@@ -469,14 +528,21 @@ class AnnotationOverlay(QWidget):
             self.current_rect = QRect(self.drag_start, pos).normalized().intersected(self.rect())
             self.update()
             return
-        if self.interaction and self.pending_rect and self.interaction_start and self.interaction_rect:
+        if (
+            self.interaction
+            and self.pending_rect
+            and self.interaction_start
+            and self.interaction_rect
+        ):
             delta = pos - self.interaction_start
             if self.interaction == "move":
                 r = QRect(self.interaction_rect)
                 r.translate(delta)
                 self.pending_rect = self._clamp_rect(r)
             else:
-                self.pending_rect = self._resize_from_handle(self.interaction_rect, self.interaction, pos)
+                self.pending_rect = self._resize_from_handle(
+                    self.interaction_rect, self.interaction, pos
+                )
             self._position_note_card()
             self.update()
             return
@@ -507,7 +573,9 @@ class AnnotationOverlay(QWidget):
             return
         if self.mode != "select" or not self.drag_start:
             return
-        rect = QRect(self.drag_start, event.position().toPoint()).normalized().intersected(self.rect())
+        rect = (
+            QRect(self.drag_start, event.position().toPoint()).normalized().intersected(self.rect())
+        )
         self.drag_start = None
         self.current_rect = None
         if rect.width() < MIN_SELECTION or rect.height() < MIN_SELECTION:
@@ -562,17 +630,32 @@ class AnnotationOverlay(QWidget):
         painter.restore()
 
     def _to_device_rect(self, rect: QRect) -> QRect:
-        return QRect(round(rect.x() * self.dpr), round(rect.y() * self.dpr), max(1, round(rect.width() * self.dpr)), max(1, round(rect.height() * self.dpr)))
+        return QRect(
+            round(rect.x() * self.dpr),
+            round(rect.y() * self.dpr),
+            max(1, round(rect.width() * self.dpr)),
+            max(1, round(rect.height() * self.dpr)),
+        )
 
     def _hit_handle(self, rect: QRect, pos: QPoint):
-        points = {"tl": rect.topLeft(), "tr": rect.topRight(), "bl": rect.bottomLeft(), "br": rect.bottomRight()}
+        points = {
+            "tl": rect.topLeft(),
+            "tr": rect.topRight(),
+            "bl": rect.bottomLeft(),
+            "br": rect.bottomRight(),
+        }
         for name, pt in points.items():
             if abs(pos.x() - pt.x()) <= HANDLE_RADIUS and abs(pos.y() - pt.y()) <= HANDLE_RADIUS:
                 return name
         return None
 
     def _resize_from_handle(self, original: QRect, handle: str, pos: QPoint) -> QRect:
-        left, top, right, bottom = original.left(), original.top(), original.right(), original.bottom()
+        left, top, right, bottom = (
+            original.left(),
+            original.top(),
+            original.right(),
+            original.bottom(),
+        )
         px = max(self.rect().left(), min(pos.x(), self.rect().right()))
         py = max(self.rect().top(), min(pos.y(), self.rect().bottom()))
         if handle == "tl":
@@ -592,10 +675,14 @@ class AnnotationOverlay(QWidget):
     def _clamp_rect(self, rect: QRect) -> QRect:
         result = QRect(rect)
         bounds = self.rect()
-        if result.left() < bounds.left(): result.moveLeft(bounds.left())
-        if result.top() < bounds.top(): result.moveTop(bounds.top())
-        if result.right() > bounds.right(): result.moveRight(bounds.right())
-        if result.bottom() > bounds.bottom(): result.moveBottom(bounds.bottom())
+        if result.left() < bounds.left():
+            result.moveLeft(bounds.left())
+        if result.top() < bounds.top():
+            result.moveTop(bounds.top())
+        if result.right() > bounds.right():
+            result.moveRight(bounds.right())
+        if result.bottom() > bounds.bottom():
+            result.moveBottom(bounds.bottom())
         return result
 
     def _show_note_card(self):
@@ -609,6 +696,11 @@ class AnnotationOverlay(QWidget):
         self._position_note_card()
         self.note_card.show()
         self.note_card.raise_()
+        _diagnostic_event(
+            "note_card_shown",
+            number=len(self.annotations) + 1,
+            controls=_widget_diagnostic_controls(self.note_card),
+        )
         QTimer.singleShot(0, self.note_card.editor.setFocus)
 
     def _position_note_card(self):
@@ -634,6 +726,12 @@ class AnnotationOverlay(QWidget):
                 note,
             )
         )
+        _diagnostic_event(
+            "annotation_committed",
+            index=len(self.annotations),
+            rect=[rect.x(), rect.y(), rect.width(), rect.height()],
+            note_length=len(note),
+        )
         if self.note_card:
             self.note_card.close()
             self.note_card = None
@@ -641,15 +739,6 @@ class AnnotationOverlay(QWidget):
         self.interaction = None
         self.update()
         return True
-
-    def _save_note(self, note: str):
-        if not self._commit_pending_note(note):
-            return
-        self.mode = "select"
-        self.setCursor(Qt.CrossCursor)
-        _set_pending_send_route(_PENDING_SEND_ROUTE, self.send_btn)
-        self._position_toolbar()
-        self.toolbar.show()
 
     def _save_and_new(self, note: str):
         if not self._commit_pending_note(note):
@@ -683,7 +772,10 @@ class AnnotationOverlay(QWidget):
 
     def _position_toolbar(self):
         self.toolbar.adjustSize()
-        self.toolbar.move(max(20, (self.width() - self.toolbar.width()) // 2), self.height() - self.toolbar.height() - 24)
+        self.toolbar.move(
+            max(20, (self.width() - self.toolbar.width()) // 2),
+            self.height() - self.toolbar.height() - 24,
+        )
 
     def _start_another(self):
         if self.review_card:
@@ -700,17 +792,30 @@ class AnnotationOverlay(QWidget):
         scale = self.dpr
         for ann in self.annotations:
             logical = QRect(*ann.rect)
-            rect = QRect(round(logical.x() * scale), round(logical.y() * scale), max(1, round(logical.width() * scale)), max(1, round(logical.height() * scale)))
+            rect = QRect(
+                round(logical.x() * scale),
+                round(logical.y() * scale),
+                max(1, round(logical.width() * scale)),
+                max(1, round(logical.height() * scale)),
+            )
             painter.setPen(QPen(QColor(LAVENDER_DARK), max(3, round(4 * scale))))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect, round(6 * scale), round(6 * scale))
             marker_size = max(26, round(28 * scale))
-            marker = QRect(rect.left() - marker_size // 2, rect.top() - marker_size // 2, marker_size, marker_size)
+            marker = QRect(
+                rect.left() - marker_size // 2,
+                rect.top() - marker_size // 2,
+                marker_size,
+                marker_size,
+            )
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(LAVENDER_DARK))
             painter.drawEllipse(marker)
             painter.setPen(QColor("white"))
-            font = painter.font(); font.setBold(True); font.setPixelSize(max(12, round(13 * scale))); painter.setFont(font)
+            font = painter.font()
+            font.setBold(True)
+            font.setPixelSize(max(12, round(13 * scale)))
+            painter.setFont(font)
             painter.drawText(marker, Qt.AlignCenter, str(ann.index))
         painter.end()
         return preview
@@ -726,7 +831,13 @@ class AnnotationOverlay(QWidget):
         self.review_card.closeRequested.connect(self._close_review)
         self.review_card.adjustSize()
         self._position_review()
-        self.review_card.show(); self.review_card.raise_()
+        self.review_card.show()
+        self.review_card.raise_()
+        _diagnostic_event(
+            "review_shown",
+            annotation_count=len(self.annotations),
+            controls=_widget_diagnostic_controls(self.review_card),
+        )
         self.mode = "review"
         self.setCursor(Qt.ArrowCursor)
 
@@ -759,6 +870,12 @@ class AnnotationOverlay(QWidget):
             self._show_review()
             return
         path, message, meta_path = self._build_payload()
+        _diagnostic_event(
+            "payload_ready",
+            image=path,
+            metadata=meta_path,
+            annotation_count=len(self.annotations),
+        )
         self.finishedCapture.emit(path, message, meta_path)
         _clear_pending_send_route()
         self.close()
@@ -778,15 +895,30 @@ class AnnotationOverlay(QWidget):
         scale = self.dpr
         for ann in self.annotations:
             logical = QRect(*ann.rect).translated(-crop.topLeft())
-            rect = QRect(round(logical.x() * scale), round(logical.y() * scale), max(1, round(logical.width() * scale)), max(1, round(logical.height() * scale)))
+            rect = QRect(
+                round(logical.x() * scale),
+                round(logical.y() * scale),
+                max(1, round(logical.width() * scale)),
+                max(1, round(logical.height() * scale)),
+            )
             painter.setPen(QPen(QColor(LAVENDER_DARK), max(3, round(4 * scale))))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect, round(6 * scale), round(6 * scale))
             marker_size = max(26, round(27 * scale))
-            marker = QRect(rect.left() - marker_size // 2, rect.top() - marker_size // 2, marker_size, marker_size)
-            painter.setBrush(QColor(LAVENDER_DARK)); painter.setPen(Qt.NoPen); painter.drawEllipse(marker)
+            marker = QRect(
+                rect.left() - marker_size // 2,
+                rect.top() - marker_size // 2,
+                marker_size,
+                marker_size,
+            )
+            painter.setBrush(QColor(LAVENDER_DARK))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(marker)
             painter.setPen(QColor("white"))
-            font = painter.font(); font.setBold(True); font.setPixelSize(max(12, round(13 * scale))); painter.setFont(font)
+            font = painter.font()
+            font.setBold(True)
+            font.setPixelSize(max(12, round(13 * scale)))
+            painter.setFont(font)
             painter.drawText(marker, Qt.AlignCenter, str(ann.index))
         painter.end()
         tmp_dir = Path(tempfile.gettempdir()) / "Annota"
@@ -797,22 +929,55 @@ class AnnotationOverlay(QWidget):
         canvas.save(str(image_path), "PNG")
         logical_size = f"{self.screen_geometry.width()}x{self.screen_geometry.height()}"
         timestamp = datetime.now(timezone.utc).isoformat()
-        message_lines = ["UI annotation from Annota", f"Application: {self.source_app}", f"Window: {self.source_window}", f"Display: {logical_size}", f"DPI scale: {self.dpr:.2f}x", f"Timestamp: {timestamp}", ""]
+        message_lines = [
+            "UI annotation from Annota",
+            f"Application: {self.source_app}",
+            f"Window: {self.source_window}",
+            f"Display: {logical_size}",
+            f"DPI scale: {self.dpr:.2f}x",
+            f"Timestamp: {timestamp}",
+            "",
+        ]
         for ann in self.annotations:
             message_lines.append(f"{ann.index}. {ann.note}")
-        message_lines += ["", "Use the highlighted regions as the visual source of truth. Inspect the relevant code, implement these fixes, build and test locally, and visually verify the result."]
+        message_lines += [
+            "",
+            "Use the highlighted regions as the visual source of truth. Inspect the relevant code, implement these fixes, build and test locally, and visually verify the result.",
+        ]
         message = "\n".join(message_lines)
         text_path.write_text(message, encoding="utf-8")
         annotations_meta = []
         for ann in self.annotations:
             item = asdict(ann)
             x, y, width, height = ann.rect
-            item["screen_rect"] = [x + self.screen_geometry.x(), y + self.screen_geometry.y(), width, height]
+            item["screen_rect"] = [
+                x + self.screen_geometry.x(),
+                y + self.screen_geometry.y(),
+                width,
+                height,
+            ]
             annotations_meta.append(item)
-        metadata = {"schema": 3, "application": self.source_app, "window_title": self.source_window, "display": logical_size, "display_geometry": [self.screen_geometry.x(), self.screen_geometry.y(), self.screen_geometry.width(), self.screen_geometry.height()], "device_pixel_ratio": self.dpr, "context_padding_percent": padding_pct, "captured_at": self.captured_at.isoformat(), "payload_created_at": timestamp, "annotations": annotations_meta, "image": str(image_path), "notes": str(text_path)}
+        metadata = {
+            "schema": 3,
+            "application": self.source_app,
+            "window_title": self.source_window,
+            "display": logical_size,
+            "display_geometry": [
+                self.screen_geometry.x(),
+                self.screen_geometry.y(),
+                self.screen_geometry.width(),
+                self.screen_geometry.height(),
+            ],
+            "device_pixel_ratio": self.dpr,
+            "context_padding_percent": padding_pct,
+            "captured_at": self.captured_at.isoformat(),
+            "payload_created_at": timestamp,
+            "annotations": annotations_meta,
+            "image": str(image_path),
+            "notes": str(text_path),
+        }
         meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         return str(image_path), message, str(meta_path)
-
 
 
 def is_macos() -> bool:
@@ -826,6 +991,7 @@ def macos_permission_status() -> dict[str, bool]:
     status = {"screen_recording": False, "accessibility": False, "post_events": False}
     try:
         import Quartz
+
         status["screen_recording"] = bool(Quartz.CGPreflightScreenCaptureAccess())
         check_post = getattr(Quartz, "CGPreflightPostEventAccess", None)
         status["post_events"] = bool(check_post()) if check_post else False
@@ -833,10 +999,50 @@ def macos_permission_status() -> dict[str, bool]:
         pass
     try:
         import HIServices
+
         status["accessibility"] = bool(HIServices.AXIsProcessTrusted())
     except Exception:
         pass
     return status
+
+
+def macos_automatic_paste_ready(status: dict[str, bool] | None = None) -> bool:
+    """Return whether macOS currently allows Annota to post paste key events."""
+    if not is_macos():
+        return True
+    current = status or macos_permission_status()
+    return bool(current.get("accessibility") or current.get("post_events"))
+
+
+def macos_post_paste_shortcut() -> tuple[bool, str]:
+    """Post Cmd+V with Quartz and report whether the request could be issued.
+
+    This deliberately avoids pynput on macOS. Quartz uses the app's native
+    Accessibility/Post Event permission and lets Annota distinguish a blocked
+    paste request from a request that was successfully posted to macOS.
+    """
+    if not is_macos():
+        return False, "Native macOS paste is unavailable on this platform"
+
+    status = macos_permission_status()
+    if not macos_automatic_paste_ready(status):
+        return False, "Accessibility permission is not available for automatic paste"
+
+    try:
+        import Quartz
+
+        key_code_v = 9
+        key_down = Quartz.CGEventCreateKeyboardEvent(None, key_code_v, True)
+        key_up = Quartz.CGEventCreateKeyboardEvent(None, key_code_v, False)
+        if key_down is None or key_up is None:
+            return False, "macOS could not create a paste keyboard event"
+        Quartz.CGEventSetFlags(key_down, Quartz.kCGEventFlagMaskCommand)
+        Quartz.CGEventSetFlags(key_up, Quartz.kCGEventFlagMaskCommand)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, key_down)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, key_up)
+        return True, ""
+    except Exception as exc:
+        return False, f"macOS paste event failed: {exc}"
 
 
 def macos_request_screen_recording() -> bool:
@@ -844,6 +1050,7 @@ def macos_request_screen_recording() -> bool:
         return True
     try:
         import Quartz
+
         return bool(Quartz.CGRequestScreenCaptureAccess())
     except Exception:
         return False
@@ -855,6 +1062,7 @@ def macos_request_accessibility() -> bool:
     result = False
     try:
         import HIServices
+
         prompt_key = getattr(HIServices, "kAXTrustedCheckOptionPrompt", None)
         if prompt_key is not None:
             result = bool(HIServices.AXIsProcessTrustedWithOptions({prompt_key: True}))
@@ -864,6 +1072,7 @@ def macos_request_accessibility() -> bool:
         pass
     try:
         import Quartz
+
         request_post = getattr(Quartz, "CGRequestPostEventAccess", None)
         if request_post is not None:
             request_post()
@@ -887,6 +1096,7 @@ def macos_frontmost_app() -> dict:
         return {}
     try:
         from AppKit import NSWorkspace
+
         app = NSWorkspace.sharedWorkspace().frontmostApplication()
         if app is None:
             return {}
@@ -899,7 +1109,7 @@ def macos_frontmost_app() -> dict:
         return {}
 
 
-def classify_macos_app(target: dict) -> Optional[str]:
+def classify_macos_app(target: dict) -> str | None:
     name = str(target.get("name", "")).lower()
     bundle_id = str(target.get("bundle_id", "")).lower()
     value = f"{name} {bundle_id}"
@@ -913,7 +1123,7 @@ def classify_macos_app(target: dict) -> Optional[str]:
     return None
 
 
-def macos_find_chat_target(route: Optional[str] = None, source_target: Optional[dict] = None) -> dict:
+def macos_find_chat_target(route: str | None = None, source_target: dict | None = None) -> dict:
     if not is_macos() or route == "clipboard":
         return {}
     source_target = source_target or {}
@@ -923,6 +1133,7 @@ def macos_find_chat_target(route: Optional[str] = None, source_target: Optional[
         return source_target
     try:
         from AppKit import NSWorkspace
+
         found = []
         for app in NSWorkspace.sharedWorkspace().runningApplications():
             target = {
@@ -948,7 +1159,10 @@ def focus_macos_app(target: dict) -> bool:
         return False
     try:
         from AppKit import NSApplicationActivateIgnoringOtherApps, NSRunningApplication
-        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(int(target.get("pid", 0)))
+
+        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(
+            int(target.get("pid", 0))
+        )
         return bool(app and app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps))
     except Exception:
         return False
@@ -960,15 +1174,17 @@ def configure_macos_startup(enabled: bool) -> None:
     launch_agents = Path.home() / "Library" / "LaunchAgents"
     plist_path = launch_agents / "net.softwify.annota.plist"
     if not enabled:
-        try:
+        with suppress(FileNotFoundError):
             plist_path.unlink()
-        except FileNotFoundError:
-            pass
         return
     launch_agents.mkdir(parents=True, exist_ok=True)
+    executable = str(Path(sys.executable).resolve())
+    program_arguments = [executable]
+    if not getattr(sys, "frozen", False):
+        program_arguments.append(str(Path(__file__).resolve()))
     data = {
         "Label": "net.softwify.annota",
-        "ProgramArguments": [str(Path(sys.executable).resolve())],
+        "ProgramArguments": program_arguments,
         "RunAtLoad": True,
         "KeepAlive": False,
         "ProcessType": "Interactive",
@@ -994,16 +1210,20 @@ class MacSetupDialog(QDialog):
         title = QLabel("Annota is running")
         title.setObjectName("dialogTitle")
         root.addWidget(title)
-        intro = QLabel("Start an annotation from this window or the Annota menu-bar icon. macOS permissions are checked here so the app never fails silently.")
+        intro = QLabel(
+            "Start an annotation from this window or the Annota menu-bar icon. macOS permissions are checked here so the app never fails silently."
+        )
         intro.setObjectName("muted")
         intro.setWordWrap(True)
         root.addWidget(intro)
         self.shortcut_status = QLabel(f"Quick Capture Shortcut: {shortcut}  -  starting...")
         self.screen_status = QLabel()
         self.access_status = QLabel()
+        self.send_status = QLabel()
         root.addWidget(self.shortcut_status)
         root.addWidget(self.screen_status)
         root.addWidget(self.access_status)
+        root.addWidget(self.send_status)
 
         screen_row = QHBoxLayout()
         allow_screen = QPushButton("Allow Screen Recording")
@@ -1027,7 +1247,9 @@ class MacSetupDialog(QDialog):
         access_row.addWidget(open_access)
         root.addLayout(access_row)
 
-        note = QLabel("Quick Capture uses a native macOS global shortcut. Accessibility is only needed for automatic paste into another app, not for the capture shortcut itself.")
+        note = QLabel(
+            "Quick Capture uses a native macOS global shortcut. Automatic send uses native Quartz paste events and falls back to the clipboard if macOS or the target app blocks insertion."
+        )
         note.setObjectName("muted")
         note.setWordWrap(True)
         root.addWidget(note)
@@ -1058,9 +1280,18 @@ class MacSetupDialog(QDialog):
 
     def _refresh(self):
         status = macos_permission_status()
-        self.screen_status.setText(f"Screen Recording: {'Ready' if status['screen_recording'] else 'Permission required'}")
-        paste_ready = status["accessibility"] or status["post_events"]
-        self.access_status.setText(f"Accessibility / automatic paste: {'Ready' if paste_ready else 'Optional permission not granted'}")
+        self.screen_status.setText(
+            f"Screen Recording: {'Ready' if status['screen_recording'] else 'Permission required'}"
+        )
+        paste_ready = macos_automatic_paste_ready(status)
+        self.access_status.setText(
+            f"Accessibility / keyboard events: {'Ready' if paste_ready else 'Permission required for automatic paste'}"
+        )
+        self.send_status.setText(
+            "Automatic send: Ready to attempt native paste"
+            if paste_ready
+            else "Automatic send: Clipboard fallback will be used until permission is available"
+        )
         self.permissionsChanged.emit()
 
     def set_shortcut_status(self, text: str):
@@ -1079,46 +1310,140 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(590)
         self.setStyleSheet(APP_STYLE)
         root = QVBoxLayout(self)
-        root.setContentsMargins(26, 24, 26, 24); root.setSpacing(16)
-        title = QLabel("Settings"); title.setObjectName("dialogTitle"); root.addWidget(title)
-        subtitle = QLabel("Keep Annota fast, quiet, and ready when you need it."); subtitle.setObjectName("muted"); root.addWidget(subtitle)
-        shortcut_card = QFrame(); shortcut_card.setObjectName("settingsCard")
-        shortcut_layout = QVBoxLayout(shortcut_card); shortcut_layout.setContentsMargins(16,14,16,14); shortcut_layout.setSpacing(9)
-        shortcut_label = QLabel("Quick Capture Shortcut"); shortcut_label.setObjectName("sectionTitle")
-        hint = QLabel("Change the global shortcut used to start a capture. On macOS the packaged app uses a native system hotkey, so Accessibility is not required just to trigger capture."); hint.setWordWrap(True); hint.setObjectName("muted")
-        shortcut_layout.addWidget(shortcut_label); shortcut_layout.addWidget(hint)
-        row = QHBoxLayout(); self.shortcut = QLineEdit(self.settings.value("shortcut", default_shortcut())); self.shortcut.setPlaceholderText(default_shortcut())
-        reset = QPushButton("Reset"); reset.setObjectName("secondaryButton"); reset.clicked.connect(lambda: self.shortcut.setText(default_shortcut()))
-        row.addWidget(self.shortcut,1); row.addWidget(reset); shortcut_layout.addLayout(row); root.addWidget(shortcut_card)
-        behavior_card = QFrame(); behavior_card.setObjectName("settingsCard")
-        behavior_layout = QVBoxLayout(behavior_card); behavior_layout.setContentsMargins(16,14,16,14); behavior_layout.setSpacing(10)
-        behavior = QLabel("Behavior"); behavior.setObjectName("sectionTitle"); behavior_layout.addWidget(behavior)
-        self.start_login = QCheckBox("Start at login" if is_macos() else "Start with Windows"); self.start_login.setChecked(self.settings.value("behavior/start_at_login",False,type=bool))
-        self.pause_shortcut = QCheckBox("Pause global shortcut"); self.pause_shortcut.setChecked(self.settings.value("behavior/pause_shortcut",False,type=bool))
-        self.clear_after = QCheckBox("Clear clipboard after insertion"); self.clear_after.setChecked(self.settings.value("behavior/clear_after_send",True,type=bool))
-        behavior_layout.addWidget(self.start_login); behavior_layout.addWidget(self.pause_shortcut); behavior_layout.addWidget(self.clear_after)
-        pad_row = QHBoxLayout(); pad_row.addWidget(QLabel("Context padding")); self.padding = QSpinBox(); self.padding.setRange(0,50); self.padding.setSuffix("%"); self.padding.setValue(int(self.settings.value("behavior/context_padding",15))); pad_row.addStretch(1); pad_row.addWidget(self.padding); behavior_layout.addLayout(pad_row); root.addWidget(behavior_card)
-        about_card = QFrame(); about_card.setObjectName("settingsCard"); about_layout = QVBoxLayout(about_card); about_layout.setContentsMargins(16,14,16,14); about_layout.setSpacing(5)
-        about_title = QLabel("About"); about_title.setObjectName("sectionTitle"); about_layout.addWidget(about_title); about_layout.addWidget(QLabel(f"Annota {APP_VERSION}  |  SoftWify  |  MIT License"))
-        privacy = QLabel("Local-first: no telemetry, no account, no continuous recording, and no cloud dependency."); privacy.setObjectName("muted"); privacy.setWordWrap(True); about_layout.addWidget(privacy); root.addWidget(about_card)
-        buttons = QHBoxLayout(); buttons.addStretch(1); cancel = QPushButton("Cancel"); cancel.setObjectName("secondaryButton"); save = QPushButton("Save settings"); save.setObjectName("primaryButton"); cancel.clicked.connect(self.reject); save.clicked.connect(self._save); buttons.addWidget(cancel); buttons.addWidget(save); root.addLayout(buttons)
+        root.setContentsMargins(26, 24, 26, 24)
+        root.setSpacing(16)
+        title = QLabel("Settings")
+        title.setObjectName("dialogTitle")
+        root.addWidget(title)
+        subtitle = QLabel("Keep Annota fast, quiet, and ready when you need it.")
+        subtitle.setObjectName("muted")
+        root.addWidget(subtitle)
+        shortcut_card = QFrame()
+        shortcut_card.setObjectName("settingsCard")
+        shortcut_layout = QVBoxLayout(shortcut_card)
+        shortcut_layout.setContentsMargins(16, 14, 16, 14)
+        shortcut_layout.setSpacing(9)
+        shortcut_label = QLabel("Quick Capture Shortcut")
+        shortcut_label.setObjectName("sectionTitle")
+        hint = QLabel(
+            "Change the global shortcut used to start a capture. On macOS the packaged app uses a native system hotkey, so Accessibility is not required just to trigger capture."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("muted")
+        shortcut_layout.addWidget(shortcut_label)
+        shortcut_layout.addWidget(hint)
+        row = QHBoxLayout()
+        self.shortcut = QLineEdit(self.settings.value("shortcut", default_shortcut()))
+        self.shortcut.setPlaceholderText(default_shortcut())
+        reset = QPushButton("Reset")
+        reset.setObjectName("secondaryButton")
+        reset.clicked.connect(lambda: self.shortcut.setText(default_shortcut()))
+        row.addWidget(self.shortcut, 1)
+        row.addWidget(reset)
+        shortcut_layout.addLayout(row)
+        root.addWidget(shortcut_card)
+        behavior_card = QFrame()
+        behavior_card.setObjectName("settingsCard")
+        behavior_layout = QVBoxLayout(behavior_card)
+        behavior_layout.setContentsMargins(16, 14, 16, 14)
+        behavior_layout.setSpacing(10)
+        behavior = QLabel("Behavior")
+        behavior.setObjectName("sectionTitle")
+        behavior_layout.addWidget(behavior)
+        self.start_login = QCheckBox("Start at login" if is_macos() else "Start with Windows")
+        self.start_login.setChecked(
+            self.settings.value("behavior/start_at_login", False, type=bool)
+        )
+        self.pause_shortcut = QCheckBox("Pause global shortcut")
+        self.pause_shortcut.setChecked(
+            self.settings.value("behavior/pause_shortcut", False, type=bool)
+        )
+        if is_macos():
+            self.clear_after = QCheckBox(
+                "Keep notes on clipboard after automatic paste (macOS safety fallback)"
+            )
+            self.clear_after.setChecked(True)
+            self.clear_after.setEnabled(False)
+            self.clear_after.setToolTip(
+                "macOS does not provide reliable confirmation that another app accepted synthetic paste, so Annota keeps the notes available for Command+V."
+            )
+        else:
+            self.clear_after = QCheckBox("Clear clipboard after insertion")
+            self.clear_after.setChecked(
+                self.settings.value("behavior/clear_after_send", True, type=bool)
+            )
+        behavior_layout.addWidget(self.start_login)
+        behavior_layout.addWidget(self.pause_shortcut)
+        behavior_layout.addWidget(self.clear_after)
+        pad_row = QHBoxLayout()
+        pad_row.addWidget(QLabel("Context padding"))
+        self.padding = QSpinBox()
+        self.padding.setRange(0, 50)
+        self.padding.setSuffix("%")
+        self.padding.setValue(int(self.settings.value("behavior/context_padding", 15)))
+        pad_row.addStretch(1)
+        pad_row.addWidget(self.padding)
+        behavior_layout.addLayout(pad_row)
+        root.addWidget(behavior_card)
+        about_card = QFrame()
+        about_card.setObjectName("settingsCard")
+        about_layout = QVBoxLayout(about_card)
+        about_layout.setContentsMargins(16, 14, 16, 14)
+        about_layout.setSpacing(5)
+        about_title = QLabel("About")
+        about_title.setObjectName("sectionTitle")
+        about_layout.addWidget(about_title)
+        about_layout.addWidget(QLabel(f"Annota {APP_VERSION}  |  SoftWify  |  MIT License"))
+        privacy = QLabel(
+            "Local-first: no telemetry, no account, no continuous recording, and no cloud dependency."
+        )
+        privacy.setObjectName("muted")
+        privacy.setWordWrap(True)
+        about_layout.addWidget(privacy)
+        root.addWidget(about_card)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.setObjectName("secondaryButton")
+        save = QPushButton("Save settings")
+        save.setObjectName("primaryButton")
+        cancel.clicked.connect(self.reject)
+        save.clicked.connect(self._save)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        root.addLayout(buttons)
 
     def _save(self):
         shortcut = normalize_shortcut(self.shortcut.text().strip())
         if not shortcut:
-            QMessageBox.warning(self, APP_NAME, f"Enter a valid shortcut such as {default_shortcut()}."); return
+            QMessageBox.warning(
+                self, APP_NAME, f"Enter a valid shortcut such as {default_shortcut()}."
+            )
+            return
         if is_macos() and not macos_hotkey_supported(shortcut):
-            QMessageBox.warning(self, APP_NAME, "On macOS, Quick Capture currently supports A-Z, 0-9, and F1-F20 with Option, Ctrl, Shift, or Cmd modifiers."); return
+            QMessageBox.warning(
+                self,
+                APP_NAME,
+                "On macOS, Quick Capture currently supports A-Z, 0-9, and F1-F20 with Option, Ctrl, Shift, or Cmd modifiers.",
+            )
+            return
         current = normalize_shortcut(str(self.settings.value("shortcut", default_shortcut())))
         if shortcut != current and shortcut_conflicts(shortcut):
-            QMessageBox.warning(self, APP_NAME, f"{shortcut} appears to be in use by the operating system or another application. Choose a different shortcut."); return
+            QMessageBox.warning(
+                self,
+                APP_NAME,
+                f"{shortcut} appears to be in use by the operating system or another application. Choose a different shortcut.",
+            )
+            return
         self.settings.setValue("shortcut", shortcut)
         self.settings.setValue("behavior/start_at_login", self.start_login.isChecked())
         self.settings.setValue("behavior/pause_shortcut", self.pause_shortcut.isChecked())
         self.settings.setValue("behavior/clear_after_send", self.clear_after.isChecked())
         self.settings.setValue("behavior/context_padding", self.padding.value())
         configure_startup(self.start_login.isChecked())
-        self.shortcutChanged.emit(shortcut); self.pauseChanged.emit(self.pause_shortcut.isChecked()); self.accept()
+        self.shortcutChanged.emit(shortcut)
+        self.pauseChanged.emit(self.pause_shortcut.isChecked())
+        self.accept()
 
 
 class GlobalHotkey:
@@ -1129,25 +1454,35 @@ class GlobalHotkey:
         self.mac_process = None
         self.mac_ready = False
         self.last_error = ""
+        self._generation = 0
 
     def set_sequence(self, sequence: str):
         self.stop()
         self.sequence = normalize_shortcut(str(sequence)) or str(sequence)
         self.last_error = ""
+        self._generation += 1
+        generation = self._generation
+
         if is_macos() and HOTKEY_HELPER_PATH.exists():
             try:
-                self.mac_process = subprocess.Popen(
+                process = subprocess.Popen(
                     [str(HOTKEY_HELPER_PATH), self.sequence],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
                     bufsize=1,
                 )
-                threading.Thread(target=self._monitor_macos_helper, daemon=True).start()
+                self.mac_process = process
+                threading.Thread(
+                    target=self._monitor_macos_helper,
+                    args=(process, generation),
+                    daemon=True,
+                ).start()
                 return
             except Exception as exc:
                 self.last_error = f"Native shortcut helper failed to start: {exc}"
                 self.mac_process = None
+
         if keyboard is None:
             if not self.last_error:
                 self.last_error = "Keyboard backend unavailable"
@@ -1163,199 +1498,517 @@ class GlobalHotkey:
             self.listener = None
             self.last_error = f"Shortcut listener failed: {exc}"
 
-    def _monitor_macos_helper(self):
-        process = self.mac_process
-        if process is None or process.stdout is None:
+    def _monitor_macos_helper(self, process, generation: int):
+        if process.stdout is None:
             return
         try:
             for raw in process.stdout:
                 line = raw.strip()
                 if line.startswith("READY"):
-                    self.mac_ready = True
-                    self.last_error = ""
-                elif line == "TRIGGER":
+                    if self.mac_process is process and self._generation == generation:
+                        self.mac_ready = True
+                        self.last_error = ""
+                elif (
+                    line == "TRIGGER"
+                    and self.mac_process is process
+                    and self._generation == generation
+                ):
                     self.callback()
         finally:
-            if process.poll() is not None and not self.mac_ready and process.stderr is not None:
-                error = process.stderr.read().strip()
+            if self.mac_process is process and self._generation == generation:
+                error = ""
+                if process.stderr is not None:
+                    error = process.stderr.read().strip().replace("ERROR ", "")
                 if error:
-                    self.last_error = error.replace("ERROR ", "")
-            self.mac_ready = False
+                    self.last_error = error
+                elif self.mac_ready:
+                    self.last_error = "Native shortcut helper stopped unexpectedly"
+                self.mac_ready = False
 
     def status_text(self) -> str:
         if not self.sequence:
             return "Not configured"
         if self.mac_ready and self.mac_process is not None and self.mac_process.poll() is None:
-            return f"{self.sequence}  -  Active (native macOS)"
+            return f"{self.sequence} - Active (native macOS)"
         if self.listener is not None:
-            return f"{self.sequence}  -  Active"
+            return f"{self.sequence} - Active"
         if self.last_error:
-            return f"{self.sequence}  -  {self.last_error}"
-        return f"{self.sequence}  -  Starting..."
+            return f"{self.sequence} - {self.last_error}"
+        return f"{self.sequence} - Starting..."
 
     def stop(self):
+        self._generation += 1
         self.mac_ready = False
-        if self.mac_process is not None:
+        process = self.mac_process
+        self.mac_process = None
+        if process is not None:
             try:
-                self.mac_process.terminate()
-                self.mac_process.wait(timeout=1.5)
-            except Exception:
-                try:
-                    self.mac_process.kill()
-                except Exception:
-                    pass
-            self.mac_process = None
+                process.terminate()
+                process.wait(timeout=1.5)
+            except (OSError, subprocess.TimeoutExpired):
+                with suppress(OSError):
+                    process.kill()
         if self.listener:
-            try:
+            with suppress(Exception):
                 self.listener.stop()
-            except Exception:
-                pass
             self.listener = None
 
 
 class AnnotaApp:
     def __init__(self, qt_app: QApplication):
-        self.app = qt_app; self.app.setQuitOnLastWindowClosed(False); self.app.setApplicationName(APP_NAME); self.app.setOrganizationName(ORG_NAME)
-        self.settings = QSettings(ORG_NAME, APP_NAME); self.overlay = None; self.settings_dialog = None; self.mac_setup_dialog = None; self.last_payload = None; self.last_source_target = {}; self.toast = None
-        self.tray = QSystemTrayIcon(QIcon(str(ICON_PATH)), self.app); self.tray.setToolTip("Annota - Quick desktop annotation")
-        self.tray_menu = QMenu(); self.annotate_action = QAction("", self.tray_menu); self.annotate_action.triggered.connect(lambda: self.activate_annotation(force=True))
-        settings_action = QAction("Settings", self.tray_menu); settings_action.triggered.connect(self.open_settings)
-        self.pause_action = QAction("Pause Shortcut", self.tray_menu); self.pause_action.setCheckable(True)
-        about = QAction("About", self.tray_menu); about.triggered.connect(self.show_about); quit_action = QAction("Quit", self.tray_menu); quit_action.triggered.connect(self.quit)
+        self.app = qt_app
+        self.app.setQuitOnLastWindowClosed(False)
+        self.app.setApplicationName(APP_NAME)
+        self.app.setOrganizationName(ORG_NAME)
+        self.settings = QSettings(ORG_NAME, APP_NAME)
+        self.overlay = None
+        self.settings_dialog = None
+        self.mac_setup_dialog = None
+        self.last_source_target = {}
+        self.toast = None
+        self._last_hotkey_error = ""
+        self.tray = QSystemTrayIcon(QIcon(str(ICON_PATH)), self.app)
+        self.tray.setToolTip("Annota - Quick desktop annotation")
+        self.tray_menu = QMenu()
+        self.annotate_action = QAction("", self.tray_menu)
+        self.annotate_action.triggered.connect(lambda: self.activate_annotation(force=True))
+        settings_action = QAction("Settings", self.tray_menu)
+        settings_action.triggered.connect(self.open_settings)
+        self.pause_action = QAction("Pause Shortcut", self.tray_menu)
+        self.pause_action.setCheckable(True)
+        about = QAction("About", self.tray_menu)
+        about.triggered.connect(self.show_about)
+        quit_action = QAction("Quit", self.tray_menu)
+        quit_action.triggered.connect(self.quit)
         self.tray_menu.addAction(self.annotate_action)
         if is_macos():
-            self.mac_setup_action = QAction("Permissions & Setup", self.tray_menu); self.mac_setup_action.triggered.connect(self.open_macos_setup); self.tray_menu.addAction(self.mac_setup_action)
-        self.tray_menu.addAction(settings_action); self.tray_menu.addAction(self.pause_action); self.tray_menu.addSeparator(); self.tray_menu.addAction(about); self.tray_menu.addAction(quit_action)
-        self.tray.setContextMenu(self.tray_menu); self.tray.activated.connect(self._tray_activated); self.tray.show()
-        self.hotkey_bridge = HotkeyBridge(self.app); self.hotkey_bridge.activated.connect(self.activate_annotation); self.hotkey = GlobalHotkey(self.hotkey_bridge.activated.emit)
-        self._update_annotate_action(); self.pause_action.toggled.connect(self._pause_hotkey)
-        paused = self.settings.value("behavior/pause_shortcut", False, type=bool); self.pause_action.setChecked(paused)
-        if not paused: self.hotkey.set_sequence(self.settings.value("shortcut", default_shortcut()))
-        if self.settings.value("behavior/start_at_login", False, type=bool): configure_startup(True)
-        self._annota_command_timer = QTimer(self.app); self._annota_command_timer.setInterval(150); self._annota_command_timer.timeout.connect(lambda: _drain_instance_commands(self)); self._annota_command_timer.start()
-        if is_macos() and not os.environ.get("ANNOTA_CI_SMOKE"): QTimer.singleShot(450, self._show_macos_setup_if_needed)
-        if _INITIAL_QUICK_ANNOTATE: QTimer.singleShot(180, lambda: self.activate_annotation(force=True))
+            self.mac_setup_action = QAction("Permissions & Setup", self.tray_menu)
+            self.mac_setup_action.triggered.connect(self.open_macos_setup)
+            self.tray_menu.addAction(self.mac_setup_action)
+        self.tray_menu.addAction(settings_action)
+        self.tray_menu.addAction(self.pause_action)
+        self.tray_menu.addSeparator()
+        self.tray_menu.addAction(about)
+        self.tray_menu.addAction(quit_action)
+        self.tray.setContextMenu(self.tray_menu)
+        self.tray.activated.connect(self._tray_activated)
+        self.tray.show()
+        _diagnostic_event(
+            "app_ready",
+            shortcut=str(self.settings.value("shortcut", default_shortcut())),
+            paused=self.settings.value("behavior/pause_shortcut", False, type=bool),
+        )
+        self.hotkey_bridge = HotkeyBridge(self.app)
+        self.hotkey_bridge.activated.connect(self.activate_annotation)
+        self.hotkey = GlobalHotkey(self.hotkey_bridge.activated.emit)
+        self._update_annotate_action()
+        self.pause_action.toggled.connect(self._pause_hotkey)
+        paused = self.settings.value("behavior/pause_shortcut", False, type=bool)
+        self.pause_action.setChecked(paused)
+        if not paused:
+            self.hotkey.set_sequence(self.settings.value("shortcut", default_shortcut()))
+        if self.settings.value("behavior/start_at_login", False, type=bool):
+            configure_startup(True)
+        self._annota_command_timer = QTimer(self.app)
+        self._annota_command_timer.setInterval(150)
+        self._annota_command_timer.timeout.connect(lambda: _drain_instance_commands(self))
+        self._annota_command_timer.start()
+        self._mac_status_timer = None
+        if is_macos():
+            self._mac_status_timer = QTimer(self.app)
+            self._mac_status_timer.setInterval(750)
+            self._mac_status_timer.timeout.connect(self._refresh_macos_hotkey_status)
+            self._mac_status_timer.start()
+            if not os.environ.get("ANNOTA_CI_SMOKE"):
+                QTimer.singleShot(450, self._show_macos_setup_if_needed)
+        if _INITIAL_QUICK_ANNOTATE:
+            QTimer.singleShot(180, lambda: self.activate_annotation(force=True))
 
     def _show_toast(self, title: str, detail: str, milliseconds: int = 4200):
-        if self.toast: self.toast.close()
-        self.toast = StatusToast(title, detail); self.toast.show_for(milliseconds)
+        if self.toast:
+            self.toast.close()
+        self.toast = StatusToast(title, detail)
+        self.toast.show_for(milliseconds)
+
     def _update_annotate_action(self):
-        sequence = str(self.settings.value("shortcut", default_shortcut())); self.annotate_action.setText(f"Annotate Now    {sequence}")
+        sequence = str(self.settings.value("shortcut", default_shortcut()))
+        self.annotate_action.setText(f"Annotate Now    {sequence}")
+
     def _tray_activated(self, reason):
-        if reason == QSystemTrayIcon.Trigger: self.activate_annotation(force=True)
+        if tray_click_starts_annotation(reason):
+            self.activate_annotation(force=True)
+
     def _show_macos_setup_if_needed(self):
         status = macos_permission_status()
-        if not status["screen_recording"] or not status["accessibility"]:
+        first_run = not self.settings.value("macos/setup_seen", False, type=bool)
+        if first_run or not status["screen_recording"]:
             self.open_macos_setup()
 
     def open_macos_setup(self):
-        if not is_macos(): return
+        if not is_macos():
+            return
         if self.mac_setup_dialog and self.mac_setup_dialog.isVisible():
-            self.mac_setup_dialog.raise_(); self.mac_setup_dialog.activateWindow(); return
+            self.mac_setup_dialog.raise_()
+            self.mac_setup_dialog.activateWindow()
+            return
+        self.settings.setValue("macos/setup_seen", True)
         sequence = str(self.settings.value("shortcut", default_shortcut()))
         self.mac_setup_dialog = MacSetupDialog(sequence)
         self.mac_setup_dialog.startRequested.connect(lambda: self.activate_annotation(force=True))
         self.mac_setup_dialog.settingsRequested.connect(self.open_settings)
         self.mac_setup_dialog.permissionsChanged.connect(self._refresh_macos_permissions)
-        self.mac_setup_dialog.show(); self.mac_setup_dialog.raise_(); self.mac_setup_dialog.activateWindow()
+        self.mac_setup_dialog.show()
+        self.mac_setup_dialog.raise_()
+        self.mac_setup_dialog.activateWindow()
         QTimer.singleShot(500, self._refresh_macos_hotkey_status)
 
     def _refresh_macos_permissions(self):
-        if not is_macos(): return
+        if not is_macos():
+            return
         self._refresh_macos_hotkey_status()
 
     def _refresh_macos_hotkey_status(self):
+        if not is_macos():
+            return
         if self.mac_setup_dialog and self.mac_setup_dialog.isVisible():
-            self.mac_setup_dialog.set_shortcut_status(self.hotkey.status_text())
+            if self.pause_action.isChecked():
+                sequence = str(self.settings.value("shortcut", default_shortcut()))
+                status_text = f"{sequence} - Paused"
+            else:
+                status_text = self.hotkey.status_text()
+            self.mac_setup_dialog.set_shortcut_status(status_text)
+        error = "" if self.pause_action.isChecked() else self.hotkey.last_error
+        if error and error != self._last_hotkey_error and not os.environ.get("ANNOTA_CI_SMOKE"):
+            self._last_hotkey_error = error
+            self._show_toast(
+                "Quick Capture shortcut unavailable",
+                f"{error}. Open Settings and choose another Quick Capture shortcut.",
+                6500,
+            )
+        elif not error:
+            self._last_hotkey_error = ""
 
     def activate_annotation(self, force: bool = False):
-        if self.pause_action.isChecked() and not force: return
+        _diagnostic_event(
+            "activate_annotation",
+            force=force,
+            paused=self.pause_action.isChecked(),
+        )
+        if self.pause_action.isChecked() and not force:
+            _diagnostic_event("activation_ignored_paused")
+            return
         if is_macos() and not os.environ.get("ANNOTA_CI_SMOKE"):
             status = macos_permission_status()
             if not status["screen_recording"]:
-                macos_request_screen_recording(); self.open_macos_setup(); self._show_toast("Screen Recording permission needed", "Allow Annota in Privacy & Security > Screen Recording, then click Start Annotation again.", 6500); return
-        if self.overlay and self.overlay.isVisible(): self.overlay.raise_(); self.overlay.activateWindow(); return
+                macos_request_screen_recording()
+                self.open_macos_setup()
+                self._show_toast(
+                    "Screen Recording permission needed",
+                    "Allow Annota in Privacy & Security > Screen Recording, then click Start Annotation again.",
+                    6500,
+                )
+                return
+        if self.overlay and self.overlay.isVisible():
+            self.overlay.raise_()
+            self.overlay.activateWindow()
+            return
         self.last_source_target = macos_frontmost_app() if is_macos() else {}
-        self.overlay = AnnotationOverlay(self.settings); self.overlay.finishedCapture.connect(self.handle_capture); self.overlay.show(); self.overlay.raise_(); self.overlay.activateWindow()
+        self.overlay = AnnotationOverlay(self.settings)
+        self.overlay.finishedCapture.connect(self.handle_capture)
+        self.overlay.show()
+        self.overlay.raise_()
+        self.overlay.activateWindow()
+        _diagnostic_event(
+            "overlay_shown",
+            geometry=[
+                self.overlay.x(),
+                self.overlay.y(),
+                self.overlay.width(),
+                self.overlay.height(),
+            ],
+        )
+
     def handle_capture(self, image_path: str, message: str, meta_path: str):
-        self.last_payload = (image_path, message, meta_path); self._show_toast("Sending to current chat", "Annota is inserting the screenshot first, then the matching notes.", 2600); self._send_to_current_chat(image_path, message)
+        self._show_toast(
+            "Sending to current chat",
+            "Annota is inserting the screenshot first, then the matching notes.",
+            2600,
+        )
+        self._send_to_current_chat(image_path, message)
+
+    def _copy_for_manual_paste(
+        self,
+        image_path: str,
+        message: str,
+        detail: str,
+        milliseconds: int = 6200,
+    ) -> None:
+        clipboard_fallback(image_path, message)
+        self._show_toast("Copied for manual paste", detail, milliseconds)
+
     def _send_to_current_chat(self, image_path: str, message: str):
         global _SEND_ROUTE_OVERRIDE
-        route = _SEND_ROUTE_OVERRIDE; route_was_clipboard = route == "clipboard"; _SEND_ROUTE_OVERRIDE = None
+        route = _SEND_ROUTE_OVERRIDE
+        route_was_clipboard = route == "clipboard"
+        _SEND_ROUTE_OVERRIDE = None
+
         if is_macos():
-            target = {} if route_was_clipboard else macos_find_chat_target(route, self.last_source_target)
+            target = (
+                {}
+                if route_was_clipboard
+                else macos_find_chat_target(route, self.last_source_target)
+            )
             if not target:
-                clipboard_fallback(image_path, message)
-                detail = "The annotated image and notes are on the clipboard and saved in your temporary Annota folder." if route_was_clipboard else "No safe macOS chat target was available. The annotated image and notes were copied for manual paste."
-                self._show_toast("Copied for manual paste", detail, 5600); return
+                detail = (
+                    "The annotated image and notes are on the clipboard and saved in your temporary Annota folder."
+                    if route_was_clipboard
+                    else "No safe macOS chat target was available. The annotated image and notes were copied for manual paste."
+                )
+                self._copy_for_manual_paste(image_path, message, detail)
+                return
+
             status = macos_permission_status()
-            if not (status["accessibility"] or status["post_events"]):
-                clipboard_fallback(image_path, message); macos_request_accessibility(); self.open_macos_setup(); self._show_toast("Accessibility permission needed", "The annotation was copied for manual paste. Allow Accessibility before using automatic insertion.", 6500); return
+            if not macos_automatic_paste_ready(status):
+                self._copy_for_manual_paste(
+                    image_path,
+                    message,
+                    "macOS is not allowing keyboard events for automatic paste. The annotation was preserved on the clipboard; allow Accessibility for Annota, then try again.",
+                    7200,
+                )
+                macos_request_accessibility()
+                self.open_macos_setup()
+                return
+
             if not focus_macos_app(target):
-                clipboard_fallback(image_path, message); self._show_toast("Copied for manual paste", "Annota could not focus the selected macOS chat app, so the annotation was copied instead.", 5600); return
-        else:
-            target = find_chat_window()
-            if not target:
-                clipboard_fallback(image_path, message)
-                detail = "The annotated image and notes are on the clipboard and saved in %TEMP%\\Annota." if route_was_clipboard else "No open Codex or ChatGPT window was found. The annotated image and notes are on the clipboard and saved in %TEMP%\\Annota."
-                self._show_toast("Copied for manual paste", detail, 5600); self.tray.showMessage("Annota", "Annotation copied for manual paste.", QSystemTrayIcon.Warning, 4500); return
-            if not focus_window(target):
-                clipboard_fallback(image_path, message); self._show_toast("Copied for manual paste", "Annota could not focus the current chat. The annotated image and notes remain available locally.", 5600); self.tray.showMessage("Annota", "Could not focus the current chat. Annotation copied for manual paste.", QSystemTrayIcon.Warning, 4500); return
-        clipboard = QApplication.clipboard(); clipboard.setPixmap(QPixmap(image_path)); QTimer.singleShot(240, paste_shortcut)
-        def paste_text():
-            clipboard.setText(message); paste_shortcut(); self._show_toast("Inserted into current chat", "Screenshot and notes are ready. Review them in the composer, then send when you are satisfied.", 4600)
-            if not is_macos(): self.tray.showMessage("Annota", "Screenshot and notes inserted. Review them before sending.", QSystemTrayIcon.Information, 3400)
-            if self.settings.value("behavior/clear_after_send", True, type=bool): QTimer.singleShot(3000, lambda: clear_if_current(message))
-        QTimer.singleShot(850, paste_text)
+                self._copy_for_manual_paste(
+                    image_path,
+                    message,
+                    "Annota could not focus the selected macOS chat app. The annotation was copied instead of being lost.",
+                )
+                return
+
+            clipboard = QApplication.clipboard()
+            clipboard.setPixmap(QPixmap(image_path))
+
+            def paste_macos_image():
+                ok, error = paste_shortcut()
+                if not ok:
+                    self._copy_for_manual_paste(
+                        image_path,
+                        message,
+                        f"Automatic image paste was blocked: {error}. The annotation was copied for manual paste.",
+                        7200,
+                    )
+                    self.open_macos_setup()
+                    return
+
+                def paste_macos_text():
+                    clipboard.setText(message)
+                    ok_text, text_error = paste_shortcut()
+                    if not ok_text:
+                        self._show_toast(
+                            "Notes copied for manual paste",
+                            f"The screenshot paste was requested, but macOS blocked the notes paste: {text_error}. Press Command+V to paste the notes; the image file is saved in Annota's temporary folder.",
+                            7600,
+                        )
+                        self.open_macos_setup()
+                        return
+                    self._show_toast(
+                        "Paste requested in current chat",
+                        "Annota posted the screenshot and notes with native macOS paste events. Review the composer before sending. The notes remain on the clipboard as a fallback.",
+                        6000,
+                    )
+
+                QTimer.singleShot(700, paste_macos_text)
+
+            # Give AppKit time to finish activating the destination before Cmd+V.
+            QTimer.singleShot(420, paste_macos_image)
+            return
+
+        target = find_chat_window()
+        if not target:
+            detail = (
+                "The annotated image and notes are on the clipboard and saved in %TEMP%\\Annota."
+                if route_was_clipboard
+                else "No open Codex or ChatGPT window was found. The annotated image and notes are on the clipboard and saved in %TEMP%\\Annota."
+            )
+            self._copy_for_manual_paste(image_path, message, detail, 5600)
+            self.tray.showMessage(
+                "Annota", "Annotation copied for manual paste.", QSystemTrayIcon.Warning, 4500
+            )
+            return
+        if not focus_window(target):
+            self._copy_for_manual_paste(
+                image_path,
+                message,
+                "Annota could not focus the current chat. The annotated image and notes remain available locally.",
+                5600,
+            )
+            self.tray.showMessage(
+                "Annota",
+                "Could not focus the current chat. Annotation copied for manual paste.",
+                QSystemTrayIcon.Warning,
+                4500,
+            )
+            return
+
+        clipboard = QApplication.clipboard()
+        clipboard.setPixmap(QPixmap(image_path))
+
+        def paste_windows_image():
+            ok, error = paste_shortcut()
+            if not ok:
+                self._copy_for_manual_paste(
+                    image_path,
+                    message,
+                    f"Automatic image paste failed: {error}. The annotation was copied for manual paste.",
+                )
+                return
+
+            def paste_windows_text():
+                clipboard.setText(message)
+                ok_text, text_error = paste_shortcut()
+                if not ok_text:
+                    self._show_toast(
+                        "Notes copied for manual paste",
+                        f"The image was inserted, but the notes paste failed: {text_error}. Press Ctrl+V to paste the notes.",
+                        6200,
+                    )
+                    return
+                self._show_toast(
+                    "Inserted into current chat",
+                    "Screenshot and notes are ready. Review them in the composer, then send when you are satisfied.",
+                    4600,
+                )
+                self.tray.showMessage(
+                    "Annota",
+                    "Screenshot and notes inserted. Review them before sending.",
+                    QSystemTrayIcon.Information,
+                    3400,
+                )
+                if self.settings.value("behavior/clear_after_send", True, type=bool):
+                    QTimer.singleShot(3000, lambda: clear_if_current(message))
+
+            QTimer.singleShot(650, paste_windows_text)
+
+        QTimer.singleShot(240, paste_windows_image)
 
     def open_settings(self):
-        self.settings_dialog = SettingsDialog(self.settings); self.settings_dialog.shortcutChanged.connect(self._update_hotkey); self.settings_dialog.pauseChanged.connect(self._set_pause_from_settings); self.settings_dialog.show(); self.settings_dialog.raise_(); self.settings_dialog.activateWindow()
+        if self.settings_dialog and self.settings_dialog.isVisible():
+            self.settings_dialog.raise_()
+            self.settings_dialog.activateWindow()
+            return
+        self.settings_dialog = SettingsDialog(self.settings)
+        self.settings_dialog.shortcutChanged.connect(self._update_hotkey)
+        self.settings_dialog.pauseChanged.connect(self._set_pause_from_settings)
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
+
     def _update_hotkey(self, sequence: str):
         self._update_annotate_action()
-        if not self.pause_action.isChecked(): self.hotkey.set_sequence(sequence)
+        if not self.pause_action.isChecked():
+            self.hotkey.set_sequence(sequence)
         if is_macos():
             QTimer.singleShot(500, self._refresh_macos_hotkey_status)
-            self._show_toast("Quick Capture shortcut updated", f"Quick Capture is now set to {sequence}.", 3200)
+            self._show_toast(
+                "Quick Capture shortcut updated", f"Quick Capture is now set to {sequence}.", 3200
+            )
         else:
-            self.tray.showMessage("Annota", f"Quick Annotate shortcut set to {sequence}.", QSystemTrayIcon.Information, 2500)
-    def _set_pause_from_settings(self, paused: bool): self.pause_action.setChecked(paused)
+            self.tray.showMessage(
+                "Annota",
+                f"Quick Annotate shortcut set to {sequence}.",
+                QSystemTrayIcon.Information,
+                2500,
+            )
+
+    def _set_pause_from_settings(self, paused: bool):
+        self.pause_action.setChecked(paused)
+
     def _pause_hotkey(self, paused: bool):
         self.settings.setValue("behavior/pause_shortcut", paused)
-        if paused: self.hotkey.stop(); return
-        self.hotkey.set_sequence(self.settings.value("shortcut", default_shortcut()))
-    def show_about(self): QMessageBox.information(None, "About Annota", f"Annota {APP_VERSION}\n\nQuick desktop annotation for visual development feedback.\n\nDefault shortcut: {default_shortcut()}\n\nNo telemetry. No account. Local-first.")
+        if paused:
+            self.hotkey.stop()
+        else:
+            self.hotkey.set_sequence(self.settings.value("shortcut", default_shortcut()))
+        if is_macos():
+            QTimer.singleShot(300, self._refresh_macos_hotkey_status)
+
+    def show_about(self):
+        QMessageBox.information(
+            None,
+            "About Annota",
+            f"Annota {APP_VERSION}\n\nQuick desktop annotation for visual development feedback.\n\nDefault shortcut: {default_shortcut()}\n\nNo telemetry. No account. Local-first.",
+        )
+
     def quit(self):
-        self.hotkey.stop(); self._annota_command_timer.stop(); self.tray.hide(); _close_instance_socket(); self.app.quit()
+        self.hotkey.stop()
+        self._annota_command_timer.stop()
+        if self._mac_status_timer is not None:
+            self._mac_status_timer.stop()
+        self.tray.hide()
+        _close_instance_socket()
+        self.app.quit()
 
 
-def default_shortcut() -> str: return "Option+Q" if platform.system() == "Darwin" else "Alt+Q"
+def default_shortcut() -> str:
+    return "Option+Q" if platform.system() == "Darwin" else "Alt+Q"
+
+
+def tray_click_starts_annotation(reason) -> bool:
+    """Return whether a tray activation should immediately start capture.
+
+    macOS menu-bar clicks must remain available for opening the context menu;
+    capture is started from the explicit Annotate Now action or Quick Capture.
+    """
+    return not is_macos() and reason == QSystemTrayIcon.Trigger
 
 
 def normalize_shortcut(text: str) -> str:
     text = text.replace(" ", "")
-    if not text: return ""
+    if not text:
+        return ""
     parts = text.split("+")
-    if len(parts) < 2: return ""
-    mods = []; key = parts[-1].upper()
+    if len(parts) < 2:
+        return ""
+    mods = []
+    key = parts[-1].upper()
     for part in parts[:-1]:
         lowered = part.lower()
-        if lowered in ("alt", "option"): mods.append("Option" if platform.system() == "Darwin" else "Alt")
-        elif lowered in ("ctrl", "control"): mods.append("Ctrl")
-        elif lowered == "shift": mods.append("Shift")
-        elif lowered in ("cmd", "command", "meta", "win", "windows"): mods.append("Cmd" if platform.system() == "Darwin" else "Win")
-        else: return ""
-    if len(key) != 1 and not (key.startswith("F") and key[1:].isdigit()): return ""
-    if key.startswith("F") and key[1:].isdigit() and not (1 <= int(key[1:]) <= 24): return ""
+        if lowered in ("alt", "option"):
+            mods.append("Option" if platform.system() == "Darwin" else "Alt")
+        elif lowered in ("ctrl", "control"):
+            mods.append("Ctrl")
+        elif lowered == "shift":
+            mods.append("Shift")
+        elif lowered in ("cmd", "command", "meta", "win", "windows"):
+            mods.append("Cmd" if platform.system() == "Darwin" else "Win")
+        else:
+            return ""
+    if len(key) != 1 and not (key.startswith("F") and key[1:].isdigit()):
+        return ""
+    if key.startswith("F") and key[1:].isdigit() and not (1 <= int(key[1:]) <= 24):
+        return ""
     return "+".join(mods + [key])
 
 
 def to_pynput_hotkey(sequence: str) -> str:
-    mapping = {"alt":"<alt>", "option":"<alt>", "ctrl":"<ctrl>", "shift":"<shift>", "cmd":"<cmd>", "win":"<cmd>"}; parts = sequence.lower().split("+"); output=[]
+    mapping = {
+        "alt": "<alt>",
+        "option": "<alt>",
+        "ctrl": "<ctrl>",
+        "shift": "<shift>",
+        "cmd": "<cmd>",
+        "win": "<cmd>",
+    }
+    parts = sequence.lower().split("+")
+    output = []
     for part in parts[:-1]:
-        if part not in mapping: return ""
+        if part not in mapping:
+            return ""
         output.append(mapping[part])
-    output.append(parts[-1]); return "+".join(output)
-
+    output.append(parts[-1])
+    return "+".join(output)
 
 
 def macos_hotkey_supported(sequence: str) -> bool:
@@ -1369,223 +2022,376 @@ def macos_hotkey_supported(sequence: str) -> bool:
         return 1 <= int(key[1:]) <= 20
     return False
 
+
 def shortcut_conflicts(sequence: str) -> bool:
-    if platform.system() != "Windows": return False
+    if platform.system() != "Windows":
+        return False
     normalized = normalize_shortcut(sequence)
-    if not normalized: return True
-    parts = normalized.split("+"); key = parts[-1]; modifier_flags = 0x4000
+    if not normalized:
+        return True
+    parts = normalized.split("+")
+    key = parts[-1]
+    modifier_flags = 0x4000
     for modifier in parts[:-1]:
-        if modifier == "Alt": modifier_flags |= 0x0001
-        elif modifier == "Ctrl": modifier_flags |= 0x0002
-        elif modifier == "Shift": modifier_flags |= 0x0004
-        elif modifier == "Win": modifier_flags |= 0x0008
-    if len(key) == 1: virtual_key = ord(key.upper())
+        if modifier == "Alt":
+            modifier_flags |= 0x0001
+        elif modifier == "Ctrl":
+            modifier_flags |= 0x0002
+        elif modifier == "Shift":
+            modifier_flags |= 0x0004
+        elif modifier == "Win":
+            modifier_flags |= 0x0008
+    if len(key) == 1:
+        virtual_key = ord(key.upper())
     elif key.startswith("F") and key[1:].isdigit():
         number = int(key[1:])
-        if not 1 <= number <= 24: return True
+        if not 1 <= number <= 24:
+            return True
         virtual_key = 112 + number - 1
-    else: return True
+    else:
+        return True
     hotkey_id = 41242
     try:
-        user32 = ctypes.windll.user32; registered = bool(user32.RegisterHotKey(None, hotkey_id, modifier_flags, virtual_key))
-        if registered: user32.UnregisterHotKey(None, hotkey_id); return False
+        user32 = ctypes.windll.user32
+        registered = bool(user32.RegisterHotKey(None, hotkey_id, modifier_flags, virtual_key))
+        if registered:
+            user32.UnregisterHotKey(None, hotkey_id)
+            return False
         return True
-    except Exception: return False
+    except Exception:
+        return False
 
 
 def active_window_context() -> tuple[str, str]:
     if is_macos():
         target = macos_frontmost_app()
         return target.get("name", "macOS"), "Active macOS app"
-    if platform.system() != "Windows": return platform.system(), "Active desktop window"
+    if platform.system() != "Windows":
+        return platform.system(), "Active desktop window"
     try:
-        user32 = ctypes.windll.user32; kernel32 = ctypes.windll.kernel32; hwnd = user32.GetForegroundWindow(); length = user32.GetWindowTextLengthW(hwnd); title_buffer = ctypes.create_unicode_buffer(length + 1); user32.GetWindowTextW(hwnd, title_buffer, length + 1); title = title_buffer.value or "Unknown window"; pid = ctypes.c_ulong(); user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)); process_name = f"PID {pid.value}"; handle = kernel32.OpenProcess(4096, False, pid.value)
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        hwnd = user32.GetForegroundWindow()
+        length = user32.GetWindowTextLengthW(hwnd)
+        title_buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title_buffer, length + 1)
+        title = title_buffer.value or "Unknown window"
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        process_name = f"PID {pid.value}"
+        handle = kernel32.OpenProcess(4096, False, pid.value)
         if handle:
             try:
-                size = ctypes.c_ulong(32768); path_buffer = ctypes.create_unicode_buffer(size.value)
-                if kernel32.QueryFullProcessImageNameW(handle, 0, path_buffer, ctypes.byref(size)): process_name = Path(path_buffer.value).name
-            finally: kernel32.CloseHandle(handle)
+                size = ctypes.c_ulong(32768)
+                path_buffer = ctypes.create_unicode_buffer(size.value)
+                if kernel32.QueryFullProcessImageNameW(handle, 0, path_buffer, ctypes.byref(size)):
+                    process_name = Path(path_buffer.value).name
+            finally:
+                kernel32.CloseHandle(handle)
         return process_name, title
-    except Exception: return "Windows", "Unknown window"
+    except Exception:
+        return "Windows", "Unknown window"
 
 
-BROWSER_EXECUTABLES = {"chrome.exe","msedge.exe","firefox.exe","brave.exe","opera.exe","opera_gx.exe","vivaldi.exe","arc.exe"}
-ROUTE_PRIORITY = ("codex","chatgpt_desktop","chatgpt_web")
-_SEND_ROUTE_OVERRIDE: Optional[str] = None
-_PENDING_SEND_ROUTE: Optional[str] = None
+BROWSER_EXECUTABLES = {
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "brave.exe",
+    "opera.exe",
+    "opera_gx.exe",
+    "vivaldi.exe",
+    "arc.exe",
+}
+ROUTE_PRIORITY = ("codex", "chatgpt_desktop", "chatgpt_web")
+_SEND_ROUTE_OVERRIDE: str | None = None
+_PENDING_SEND_ROUTE: str | None = None
 
 
-def classify_chat_window(title: str, executable: str = "") -> Optional[str]:
-    title_l=(title or "").strip().lower(); exe_l=(executable or "").strip().lower(); exe_name=exe_l.replace("\\", "/").rsplit("/", 1)[-1]; is_browser=exe_name in BROWSER_EXECUTABLES; is_chatgpt_desktop="chatgpt" in exe_l and not is_browser; is_codex_process="codex" in exe_l and not is_browser
-    if is_codex_process: return "codex"
-    if is_chatgpt_desktop and "codex" in title_l: return "codex"
-    if "codex" in title_l and not is_browser: return "codex"
-    if is_chatgpt_desktop: return "chatgpt_desktop"
-    if is_browser and ("chatgpt" in title_l or "chatgpt.com" in title_l): return "chatgpt_web"
-    if "chatgpt" in title_l and not is_browser: return "chatgpt_desktop"
+def classify_chat_window(title: str, executable: str = "") -> str | None:
+    title_l = (title or "").strip().lower()
+    exe_l = (executable or "").strip().lower()
+    exe_name = exe_l.replace("\\", "/").rsplit("/", 1)[-1]
+    is_browser = exe_name in BROWSER_EXECUTABLES
+    is_chatgpt_desktop = "chatgpt" in exe_l and not is_browser
+    is_codex_process = "codex" in exe_l and not is_browser
+    if is_codex_process:
+        return "codex"
+    if is_chatgpt_desktop and "codex" in title_l:
+        return "codex"
+    if "codex" in title_l and not is_browser:
+        return "codex"
+    if is_chatgpt_desktop:
+        return "chatgpt_desktop"
+    if is_browser and ("chatgpt" in title_l or "chatgpt.com" in title_l):
+        return "chatgpt_web"
+    if "chatgpt" in title_l and not is_browser:
+        return "chatgpt_desktop"
     return None
 
 
-def choose_chat_target(targets: list[dict], route: Optional[str] = None) -> Optional[int]:
-    if route == "clipboard": return None
+def choose_chat_target(targets: list[dict], route: str | None = None) -> int | None:
+    if route == "clipboard":
+        return None
     wanted = ROUTE_PRIORITY if not route or route == "auto" else (route,)
     for route_name in wanted:
         for target in targets:
             if target.get("route") == route_name:
-                hwnd=target.get("hwnd")
-                if isinstance(hwnd,int) and hwnd: return hwnd
+                hwnd = target.get("hwnd")
+                if isinstance(hwnd, int) and hwnd:
+                    return hwnd
     return None
 
 
 def _process_image_path(pid: int) -> str:
-    if os.name != "nt" or not pid: return ""
-    kernel32=ctypes.windll.kernel32; handle=kernel32.OpenProcess(0x1000,False,pid)
-    if not handle: return ""
+    if os.name != "nt" or not pid:
+        return ""
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return ""
     try:
-        size=wintypes.DWORD(32768); buffer=ctypes.create_unicode_buffer(size.value); query=kernel32.QueryFullProcessImageNameW; query.argtypes=[wintypes.HANDLE,wintypes.DWORD,wintypes.LPWSTR,ctypes.POINTER(wintypes.DWORD)]; query.restype=wintypes.BOOL
-        return buffer.value if query(handle,0,buffer,ctypes.byref(size)) else ""
-    finally: kernel32.CloseHandle(handle)
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        query = kernel32.QueryFullProcessImageNameW
+        query.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        query.restype = wintypes.BOOL
+        return buffer.value if query(handle, 0, buffer, ctypes.byref(size)) else ""
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def detect_chat_targets() -> list[dict]:
-    if os.name != "nt": return []
-    user32=ctypes.windll.user32; own_pid=os.getpid(); found=[]; EnumWindowsProc=ctypes.WINFUNCTYPE(wintypes.BOOL,wintypes.HWND,wintypes.LPARAM)
-    def callback(hwnd,_lparam):
-        if not user32.IsWindowVisible(hwnd): return True
-        length=user32.GetWindowTextLengthW(hwnd)
-        if length <= 0: return True
-        buffer=ctypes.create_unicode_buffer(length+1); user32.GetWindowTextW(hwnd,buffer,length+1); title=buffer.value.strip()
-        if not title or title.lower().startswith("annota"): return True
-        pid=wintypes.DWORD(); user32.GetWindowThreadProcessId(hwnd,ctypes.byref(pid))
-        if pid.value == own_pid: return True
-        executable=_process_image_path(pid.value); route=classify_chat_window(title,executable)
-        if route: found.append({"hwnd":int(hwnd),"title":title,"pid":int(pid.value),"executable":executable,"route":route})
+    if os.name != "nt":
+        return []
+    user32 = ctypes.windll.user32
+    own_pid = os.getpid()
+    found = []
+    EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def callback(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buffer, length + 1)
+        title = buffer.value.strip()
+        if not title or title.lower().startswith("annota"):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value == own_pid:
+            return True
+        executable = _process_image_path(pid.value)
+        route = classify_chat_window(title, executable)
+        if route:
+            found.append(
+                {
+                    "hwnd": int(hwnd),
+                    "title": title,
+                    "pid": int(pid.value),
+                    "executable": executable,
+                    "route": route,
+                }
+            )
         return True
-    callback_ref=EnumWindowsProc(callback); user32.EnumWindows(callback_ref,0); return found
+
+    callback_ref = EnumWindowsProc(callback)
+    user32.EnumWindows(callback_ref, 0)
+    return found
 
 
-def find_chat_window() -> Optional[int]: return choose_chat_target(detect_chat_targets(), _SEND_ROUTE_OVERRIDE)
+def find_chat_window() -> int | None:
+    return choose_chat_target(detect_chat_targets(), _SEND_ROUTE_OVERRIDE)
 
 
 def focus_window(hwnd: int) -> bool:
-    if platform.system() != "Windows" or not hwnd: return False
+    if platform.system() != "Windows" or not hwnd:
+        return False
     try:
-        user32=ctypes.windll.user32; user32.ShowWindow(hwnd,9); return bool(user32.SetForegroundWindow(hwnd))
-    except Exception: return False
+        user32 = ctypes.windll.user32
+        user32.ShowWindow(hwnd, 9)
+        return bool(user32.SetForegroundWindow(hwnd))
+    except Exception:
+        return False
 
 
-def paste_shortcut():
-    if keyboard is None: return
+def paste_shortcut() -> tuple[bool, str]:
+    if is_macos():
+        return macos_post_paste_shortcut()
+    if keyboard is None:
+        return False, "Keyboard backend unavailable"
     try:
-        controller=keyboard.Controller(); modifier=keyboard.Key.cmd if platform.system()=="Darwin" else keyboard.Key.ctrl
-        with controller.pressed(modifier): controller.press("v"); controller.release("v")
-    except Exception: return
+        controller = keyboard.Controller()
+        with controller.pressed(keyboard.Key.ctrl):
+            controller.press("v")
+            controller.release("v")
+        return True, ""
+    except Exception as exc:
+        return False, f"Paste shortcut failed: {exc}"
 
 
 def clipboard_fallback(image_path: str, message: str):
-    clipboard=QApplication.clipboard(); mime=QMimeData(); mime.setText(message); image=QPixmap(image_path).toImage(); mime.setImageData(image); clipboard.setMimeData(mime); Path(image_path).with_suffix(".txt").write_text(message,encoding="utf-8")
+    clipboard = QApplication.clipboard()
+    mime = QMimeData()
+    mime.setText(message)
+    image = QPixmap(image_path).toImage()
+    mime.setImageData(image)
+    clipboard.setMimeData(mime)
+    Path(image_path).with_suffix(".txt").write_text(message, encoding="utf-8")
 
 
 def clear_if_current(text: str):
-    clipboard=QApplication.clipboard()
-    if clipboard.text()==text: clipboard.clear()
+    clipboard = QApplication.clipboard()
+    if clipboard.text() == text:
+        clipboard.clear()
 
 
 def configure_startup(enabled: bool):
     if is_macos():
         configure_macos_startup(enabled)
         return
-    if platform.system() != "Windows" or winreg is None: return
+    if platform.system() != "Windows" or winreg is None:
+        return
     try:
-        key_path=r"Software\Microsoft\Windows\CurrentVersion\Run"
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,key_path,0,winreg.KEY_SET_VALUE) as key:
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
             if enabled:
-                executable=str(Path(sys.executable).resolve()); command=f'"{executable}"' if getattr(sys,"frozen",False) else f'"{executable}" "{Path(__file__).resolve()}"'; winreg.SetValueEx(key,APP_NAME,0,winreg.REG_SZ,command)
+                executable = str(Path(sys.executable).resolve())
+                command = (
+                    f'"{executable}"'
+                    if getattr(sys, "frozen", False)
+                    else f'"{executable}" "{Path(__file__).resolve()}"'
+                )
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, command)
             else:
-                try: winreg.DeleteValue(key,APP_NAME)
-                except FileNotFoundError: pass
-    except Exception: return
+                with suppress(FileNotFoundError):
+                    winreg.DeleteValue(key, APP_NAME)
+    except Exception:
+        return
 
 
-def shell_command_for_executable(executable: str | Path) -> str: return f'"{Path(executable)}" --annotate'
+def shell_command_for_executable(executable: str | Path) -> str:
+    return f'"{Path(executable)}" --annotate'
 
 
-def _shell_registry_paths() -> tuple[str,...]: return (rf"Software\Classes\DesktopBackground\Shell\{SHELL_VERB_NAME}",rf"Software\Classes\Directory\Background\shell\{SHELL_VERB_NAME}")
+def _shell_registry_paths() -> tuple[str, ...]:
+    return (
+        rf"Software\Classes\DesktopBackground\Shell\{SHELL_VERB_NAME}",
+        rf"Software\Classes\Directory\Background\shell\{SHELL_VERB_NAME}",
+    )
 
 
 def install_shell_context_menu(executable: str | Path | None = None) -> bool:
-    if os.name != "nt" or winreg is None: return False
+    if os.name != "nt" or winreg is None:
+        return False
     if executable is None:
-        if not getattr(sys,"frozen",False): return False
-        executable=sys.executable
-    exe=str(Path(executable).resolve()); command=shell_command_for_executable(exe)
+        if not getattr(sys, "frozen", False):
+            return False
+        executable = sys.executable
+    exe = str(Path(executable).resolve())
+    command = shell_command_for_executable(exe)
     try:
         for base_path in _shell_registry_paths():
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER,base_path) as key:
-                winreg.SetValueEx(key,"MUIVerb",0,winreg.REG_SZ,"Annota"); winreg.SetValueEx(key,"Icon",0,winreg.REG_SZ,exe); winreg.SetValueEx(key,"Position",0,winreg.REG_SZ,"Top")
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER,base_path+r"\command") as key: winreg.SetValueEx(key,"",0,winreg.REG_SZ,command)
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base_path) as key:
+                winreg.SetValueEx(key, "MUIVerb", 0, winreg.REG_SZ, "Annota")
+                winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, exe)
+                winreg.SetValueEx(key, "Position", 0, winreg.REG_SZ, "Top")
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base_path + r"\command") as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, command)
         return True
-    except OSError: return False
+    except OSError:
+        return False
 
 
-_COMMAND_QUEUE: "queue.Queue[str]" = queue.Queue()
-_INSTANCE_SOCKET: Optional[socket.socket] = None
-_INSTANCE_THREAD: Optional[threading.Thread] = None
+_COMMAND_QUEUE: queue.Queue[str] = queue.Queue()
+_INSTANCE_SOCKET: socket.socket | None = None
+_INSTANCE_THREAD: threading.Thread | None = None
 _INITIAL_QUICK_ANNOTATE = any(arg.lower() in QUICK_ANNOTATE_FLAGS for arg in sys.argv[1:])
 
 
 def _instance_listener(sock: socket.socket):
     while True:
-        try: data,_addr=sock.recvfrom(128)
-        except OSError: return
-        command=data.decode("utf-8",errors="ignore").strip().lower()
-        if command: _COMMAND_QUEUE.put(command)
+        try:
+            data, _addr = sock.recvfrom(128)
+        except OSError:
+            return
+        command = data.decode("utf-8", errors="ignore").strip().lower()
+        if command:
+            _COMMAND_QUEUE.put(command)
 
 
 def _start_or_forward_instance() -> bool:
-    global _INSTANCE_SOCKET,_INSTANCE_THREAD
-    sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    try: sock.bind((INSTANCE_HOST,INSTANCE_PORT))
+    global _INSTANCE_SOCKET, _INSTANCE_THREAD
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind((INSTANCE_HOST, INSTANCE_PORT))
     except OSError:
         sock.close()
-        if _INITIAL_QUICK_ANNOTATE:
-            try:
-                sender=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); sender.sendto(b"annotate",(INSTANCE_HOST,INSTANCE_PORT)); sender.close()
-            except OSError: pass
+        command = b"annotate" if _INITIAL_QUICK_ANNOTATE else b"show"
+        try:
+            sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sender.sendto(command, (INSTANCE_HOST, INSTANCE_PORT))
+            sender.close()
+        except OSError:
+            pass
         return False
-    _INSTANCE_SOCKET=sock; _INSTANCE_THREAD=threading.Thread(target=_instance_listener,args=(sock,),daemon=True); _INSTANCE_THREAD.start(); return True
+    _INSTANCE_SOCKET = sock
+    _INSTANCE_THREAD = threading.Thread(target=_instance_listener, args=(sock,), daemon=True)
+    _INSTANCE_THREAD.start()
+    return True
 
 
 def _drain_instance_commands(app):
     while True:
-        try: command=_COMMAND_QUEUE.get_nowait()
-        except queue.Empty: return
-        if command=="annotate": app.activate_annotation(force=True)
+        try:
+            command = _COMMAND_QUEUE.get_nowait()
+        except queue.Empty:
+            return
+        if command == "annotate":
+            app.activate_annotation(force=True)
+        elif command == "show":
+            if is_macos():
+                app.open_macos_setup()
+            else:
+                app.open_settings()
 
 
 def _close_instance_socket():
     global _INSTANCE_SOCKET
     if _INSTANCE_SOCKET is not None:
-        try: _INSTANCE_SOCKET.close()
-        except OSError: pass
-        _INSTANCE_SOCKET=None
+        with suppress(OSError):
+            _INSTANCE_SOCKET.close()
+        _INSTANCE_SOCKET = None
 
 
-def _find_layout_containing(layout,widget):
-    if layout is None: return None
-    try: count=layout.count()
-    except Exception: return None
+def _find_layout_containing(layout, widget):
+    if layout is None:
+        return None
+    try:
+        count = layout.count()
+    except Exception:
+        return None
     for index in range(count):
-        item=layout.itemAt(index)
-        if item.widget() is widget: return layout
-        child_layout=item.layout()
+        item = layout.itemAt(index)
+        if item.widget() is widget:
+            return layout
+        child_layout = item.layout()
         if child_layout is not None:
-            result=_find_layout_containing(child_layout,widget)
-            if result is not None: return result
+            result = _find_layout_containing(child_layout, widget)
+            if result is not None:
+                return result
     return None
 
 
-def _send_button_label(route: Optional[str] = None) -> str:
+def _send_button_label(route: str | None = None) -> str:
     labels = {
         None: "Auto Send",
         "auto": "Auto Send",
@@ -1608,17 +2414,19 @@ def _clear_pending_send_route(*_args):
     _PENDING_SEND_ROUTE = None
 
 
-def _set_pending_send_route(route: Optional[str], send_button: QPushButton):
+def _set_pending_send_route(route: str | None, send_button: QPushButton):
     global _PENDING_SEND_ROUTE
     _PENDING_SEND_ROUTE = None if route in (None, "auto") else route
     send_button.setText(_send_button_label(_PENDING_SEND_ROUTE))
     if _PENDING_SEND_ROUTE is None:
-        send_button.setToolTip("Auto Send: Codex first, then ChatGPT desktop, ChatGPT web, then clipboard fallback")
+        send_button.setToolTip(
+            "Auto Send: Codex first, then ChatGPT desktop, ChatGPT web, then clipboard fallback"
+        )
     else:
         send_button.setToolTip(f"Use {_send_button_label(_PENDING_SEND_ROUTE)} after Review")
 
 
-def _add_send_route_menu(root, send_button: Optional[QPushButton] = None):
+def _add_send_route_menu(root, send_button: QPushButton | None = None):
     if root.property("annotaRouteMenuAdded"):
         return
     if send_button is None:
@@ -1676,31 +2484,55 @@ def _add_send_route_menu(root, send_button: Optional[QPushButton] = None):
 
 
 def _runtime_self_test() -> int:
-    result = {"platform": platform.system(), "version": APP_VERSION, "icon_exists": ICON_PATH.exists(), "send_icon_exists": SEND_ICON_PATH.exists(), "keyboard_backend": keyboard is not None}
+    result = {
+        "platform": platform.system(),
+        "version": APP_VERSION,
+        "icon_exists": ICON_PATH.exists(),
+        "send_icon_exists": SEND_ICON_PATH.exists(),
+        "keyboard_backend": keyboard is not None,
+    }
     if is_macos():
-        result["native_hotkey_helper"] = HOTKEY_HELPER_PATH.exists() and os.access(HOTKEY_HELPER_PATH, os.X_OK)
+        result["native_hotkey_helper"] = HOTKEY_HELPER_PATH.exists() and os.access(
+            HOTKEY_HELPER_PATH, os.X_OK
+        )
         result["permissions"] = macos_permission_status()
+        result["automatic_paste_ready"] = macos_automatic_paste_ready(result["permissions"])
         try:
             import AppKit  # noqa: F401
-            import Quartz  # noqa: F401
             import HIServices  # noqa: F401
+            import Quartz  # noqa: F401
+
             result["mac_frameworks"] = True
         except Exception:
             result["mac_frameworks"] = False
     print(json.dumps(result, sort_keys=True))
     ok = result["icon_exists"] and result["send_icon_exists"] and result["keyboard_backend"]
-    if is_macos(): ok = ok and result.get("mac_frameworks", False) and result.get("native_hotkey_helper", False)
+    if is_macos():
+        ok = (
+            ok and result.get("mac_frameworks", False) and result.get("native_hotkey_helper", False)
+        )
     return 0 if ok else 1
 
 
 def main() -> int:
-    if "--self-test" in sys.argv: return _runtime_self_test()
+    if "--self-test" in sys.argv:
+        return _runtime_self_test()
     smoke_test = "--smoke-test" in sys.argv
-    if smoke_test: os.environ["ANNOTA_CI_SMOKE"] = "1"
-    if not _start_or_forward_instance(): return 0
-    install_shell_context_menu(); os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING","1"); app=QApplication(sys.argv); app.setStyleSheet(APP_STYLE); app.setWindowIcon(QIcon(str(ICON_PATH))); controller=AnnotaApp(app); app._annota_controller=controller
-    if smoke_test: QTimer.singleShot(1800, controller.quit)
+    if smoke_test:
+        os.environ["ANNOTA_CI_SMOKE"] = "1"
+    if not _start_or_forward_instance():
+        return 0
+    install_shell_context_menu()
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+    app = QApplication(sys.argv)
+    app.setStyleSheet(APP_STYLE)
+    app.setWindowIcon(QIcon(str(ICON_PATH)))
+    controller = AnnotaApp(app)
+    app._annota_controller = controller
+    if smoke_test:
+        QTimer.singleShot(1800, controller.quit)
     return app.exec()
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,9 +1,10 @@
+import io
+import plistlib
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QPushButton
 
 import main
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -14,8 +15,14 @@ def _app():
 
 def test_macos_app_classification_contract():
     assert main.classify_macos_app({"name": "Codex", "bundle_id": "com.openai.codex"}) == "codex"
-    assert main.classify_macos_app({"name": "ChatGPT", "bundle_id": "com.openai.chat"}) == "chatgpt_desktop"
-    assert main.classify_macos_app({"name": "Safari", "bundle_id": "com.apple.Safari"}) == "chatgpt_web"
+    assert (
+        main.classify_macos_app({"name": "ChatGPT", "bundle_id": "com.openai.chat"})
+        == "chatgpt_desktop"
+    )
+    assert (
+        main.classify_macos_app({"name": "Safari", "bundle_id": "com.apple.Safari"})
+        == "chatgpt_web"
+    )
     assert main.classify_macos_app({"name": "Finder", "bundle_id": "com.apple.finder"}) is None
 
 
@@ -39,6 +46,25 @@ def test_configure_startup_routes_to_macos_helper(monkeypatch):
     assert called == [True]
 
 
+def test_macos_startup_source_mode_includes_main_script(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "is_macos", lambda: True)
+    monkeypatch.setattr(main.Path, "home", classmethod(lambda _cls: tmp_path))
+    monkeypatch.delattr(main.sys, "frozen", raising=False)
+
+    main.configure_macos_startup(True)
+
+    plist_path = tmp_path / "Library" / "LaunchAgents" / "net.softwify.annota.plist"
+    with plist_path.open("rb") as handle:
+        data = plistlib.load(handle)
+    assert data["ProgramArguments"] == [
+        str(Path(main.sys.executable).resolve()),
+        str(Path(main.__file__).resolve()),
+    ]
+
+    main.configure_macos_startup(False)
+    assert not plist_path.exists()
+
+
 def test_macos_native_hotkey_supported_keys():
     assert main.macos_hotkey_supported("Option+Q")
     assert main.macos_hotkey_supported("Cmd+Shift+A")
@@ -46,6 +72,30 @@ def test_macos_native_hotkey_supported_keys():
     assert main.macos_hotkey_supported("Option+9")
     assert not main.macos_hotkey_supported("Option+F21")
     assert not main.macos_hotkey_supported("Option+;")
+
+
+def test_stale_native_hotkey_monitor_cannot_override_current_process():
+    class FakeProcess:
+        def __init__(self, error=""):
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO(error)
+
+        def poll(self):
+            return 1
+
+    hotkey = main.GlobalHotkey(lambda: None)
+    old_process = FakeProcess("ERROR stale helper failure")
+    current_process = FakeProcess()
+    hotkey.mac_process = current_process
+    hotkey.mac_ready = True
+    hotkey.last_error = ""
+    hotkey._generation = 8
+
+    hotkey._monitor_macos_helper(old_process, 7)
+
+    assert hotkey.mac_process is current_process
+    assert hotkey.mac_ready is True
+    assert hotkey.last_error == ""
 
 
 def test_macos_setup_has_settings_and_start_annotation_controls():
@@ -80,5 +130,7 @@ def test_macos_runtime_reliability_source_contract():
     assert "HOTKEY_HELPER_PATH" in source
     assert "subprocess.Popen" in source
     assert "Active (native macOS)" in source
+    assert "macos/setup_seen" in source
+    assert "Native shortcut helper stopped unexpectedly" in source
     assert "--self-test" in source
     assert "--smoke-test" in source

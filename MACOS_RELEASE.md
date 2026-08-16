@@ -25,10 +25,10 @@ dist/Annota.app
 The build script:
 
 1. Creates `.venv-macos` when needed.
-2. Installs only `requirements.txt` dependencies.
+2. Installs runtime and development/QA dependencies from `requirements.txt` and `requirements-dev.txt`.
 3. Generates the shared Annota artwork plus a native Apple iconset.
 4. Converts the iconset to `assets/annota.icns` with `iconutil`.
-5. Runs Python compilation and the full pytest suite.
+5. Runs Ruff lint/format checks, Python compilation, and the full pytest suite.
 6. Builds a native `.app` with PyInstaller.
 7. Applies an ad-hoc signature for local testing unless a Developer ID identity is supplied.
 
@@ -89,7 +89,9 @@ The release script submits the DMG, waits for notarization, and staples the resu
 Annota may require macOS privacy permissions for its desktop workflow:
 
 - **Screen Recording**: required for desktop capture.
-- **Accessibility**: may be required for automated paste into another app. The native Option+Q Quick Capture registration does not require Accessibility.
+- **Accessibility / Post Events**: required for automatic `Command+V` insertion into another app. The native Option+Q Quick Capture registration does not require Accessibility.
+
+Annota does **not** use Apple Events for its send path, so the macOS **Automation** privacy category is not required. Automatic send uses native Quartz keyboard events after the target app is focused. If macOS blocks an image or notes paste request, Annota reports the failure and preserves clipboard/manual-paste recovery instead of silently dropping the annotation.
 
 Annota v0.2.2 includes a visible macOS setup window with permission status, direct Settings access for changing Quick Capture, links to Privacy & Security, and a Start Annotation button. Quick Capture is registered by a bundled native macOS helper rather than relying on global keyboard monitoring. Restart Annota once after changing privacy permissions if macOS requests it.
 
@@ -105,7 +107,9 @@ Do not publish a macOS build until all of these pass on the actual release machi
 - Selection, move, resize, note entry, multiple annotations, and Review work.
 - Retina rendering is sharp and marker/text sizing is correct.
 - Clipboard fallback preserves PNG + notes + JSON locally.
-- Paste automation works after Accessibility permission is granted.
+- Native Quartz paste automation works after Accessibility/Post Event permission is granted.
+- If paste permission is missing or a Quartz paste request cannot be issued, Annota visibly reports the failure and preserves manual-paste recovery.
+- Notes remain on the macOS clipboard after an automatic paste attempt so `Command+V` remains available as a safety fallback.
 - Pause Shortcut, custom shortcut, context padding, and clipboard settings persist.
 - App relaunch works after signing/notarization.
 - DMG opens normally and the app launches after being copied from the DMG.

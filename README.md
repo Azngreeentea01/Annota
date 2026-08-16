@@ -60,7 +60,7 @@ The arrow beside Auto Send provides one-send choices:
 
 Choosing a specific destination changes the primary button label, for example from `Auto Send` to `Send to Codex`. The selection carries through additional annotations and into Review. Closing the complete annotation session resets the next session back to Auto Send.
 
-If no requested target can be found or focused, Annota falls back to the manual-paste flow and keeps the local PNG/TXT/JSON payload. macOS target routing must be acceptance-tested on the release Mac before publication; clipboard/manual-paste fallback remains the safe path when a target cannot be focused.
+If no requested target can be found or focused, Annota falls back to the manual-paste flow and keeps the local PNG/TXT/JSON payload. On macOS, automatic insertion uses native Quartz `Command+V` events only after Accessibility/Post Event permission is available and the destination app is focused. If either image or notes paste cannot be issued, Annota reports the reason and preserves a clipboard/manual-paste recovery path instead of silently failing. Annota does not use Apple Events for this flow, so macOS Automation permission is not required.
 
 ## Review requirement
 Review is a mandatory confirmation gate before payload insertion. It contains:
@@ -94,7 +94,8 @@ The JSON payload includes:
 - Detect common Windows shortcut conflicts
 - Start with Windows
 - Pause global shortcut
-- Clear clipboard after successful insertion
+- Windows: Clear clipboard after successful insertion
+- macOS: notes remain on the clipboard after automatic paste as a safety fallback
 - Context padding: 0-50%
 - About/version/privacy information
 
@@ -124,7 +125,7 @@ build.bat
 Output:
 `dist\Annota\Annota.exe`
 
-Package the current release when its versioned release script is ready:
+Package the current Windows release after a successful one-folder build:
 ```bat
 release_windows.bat
 ```
@@ -150,7 +151,7 @@ chmod +x build_macos.sh release_macos.sh
 ./release_macos.sh
 ```
 
-A production macOS release must be built and acceptance-tested on an actual Mac. In v0.2.2, Annota shows a macOS setup window with direct Settings access, provides a Start Annotation button, uses a bundled native macOS global-hotkey helper for Quick Capture, and keeps clipboard fallback available if automatic insertion cannot be authorized. Accessibility is for automatic paste behavior; the native Quick Capture shortcut itself does not depend on Accessibility.
+A production macOS release must be built and acceptance-tested on an actual Mac. In v0.2.2, Annota shows a macOS setup window with direct Settings access, provides a Start Annotation button, uses a bundled native macOS global-hotkey helper for Quick Capture, and keeps clipboard fallback available if automatic insertion cannot be authorized. Automatic paste now uses native Quartz keyboard events rather than pynput, rechecks Accessibility/Post Event permission before insertion, waits for the destination app to activate, and reports blocked image/text paste instead of claiming success. Accessibility is for automatic paste behavior; the native Quick Capture shortcut itself does not depend on Accessibility.
 
 For ARM64 release-candidate builds, `.github/workflows/macos-arm64-build.yml` uses GitHub's standard `macos-15` Apple Silicon runner. It publishes the DMG and SHA-256 directly to a GitHub prerelease and intentionally does not use Actions artifact storage. A real-Mac acceptance pass is still required before production release.
 

@@ -1,12 +1,44 @@
 from pathlib import Path
 
+import main
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_release_versions_match_application_version():
+    expected = main.APP_VERSION
+    windows = (ROOT / "release_windows.bat").read_text(encoding="utf-8")
+    mac_build = (ROOT / "build_macos.sh").read_text(encoding="utf-8")
+    mac_release = (ROOT / "release_macos.sh").read_text(encoding="utf-8")
+    mac_kit = (ROOT / "release_macos_kit.bat").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "macos-arm64-build.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert f"VERSION={expected}" in windows
+    assert f'VERSION="{expected}"' in mac_build
+    assert f'VERSION="{expected}"' in mac_release
+    assert f"VERSION={expected}" in mac_kit
+    assert f'ANNOTA_VERSION: "{expected}"' in workflow
+
+
+def test_windows_build_quality_gate_contract():
+    for filename in ("build.bat", "build_onefile.bat"):
+        script = (ROOT / filename).read_text(encoding="utf-8")
+        assert "requirements-dev.txt" in script
+        assert "ruff check main.py tests tools" in script
+        assert "ruff format --check main.py tests tools" in script
+        assert "--specpath build" in script
+        assert "%CD%\\assets" in script
+        assert "pytest -q" in script
+
+    assert (ROOT / "pyproject.toml").is_file()
+    assert (ROOT / "requirements-dev.txt").is_file()
+    assert not (ROOT / "Annota.spec").exists()
+
+
 def test_windows_release_packaging_contract():
     script = (ROOT / "release_windows.bat").read_text(encoding="utf-8")
-    assert 'VERSION=0.2.1' in script
     assert "Annota-v%VERSION%-Windows-x64.zip" in script
     assert "Get-FileHash" in script
     assert "README.md" in script
@@ -19,12 +51,15 @@ def test_macos_release_support_contract():
     kit = (ROOT / "release_macos_kit.bat").read_text(encoding="utf-8")
     guide = (ROOT / "MACOS_RELEASE.md").read_text(encoding="utf-8")
 
-    assert 'VERSION="0.2.2"' in build
-    assert 'VERSION="0.2.2"' in release
+    assert "requirements-dev.txt" in build
+    assert "ruff check main.py tests tools" in build
+    assert "ruff format --check main.py tests tools" in build
+    assert "--specpath build" in build
     assert "iconutil -c icns" in build
     assert "swiftc tools/annota_hotkey.swift" in build
     assert 'annota_hotkey "Option+Q"' in build
-    assert '--add-binary ".macos-native/annota_hotkey:."' in build
+    assert '--add-data "$PWD/assets:assets"' in build
+    assert '--add-binary "$PWD/.macos-native/annota_hotkey:."' in build
     assert "--osx-bundle-identifier net.softwify.annota" in build
     assert "dist/Annota.app" in build
     assert "MACOS_CODESIGN_IDENTITY" in build
@@ -37,6 +72,8 @@ def test_macos_release_support_contract():
     assert "macOS-Build-Kit.zip" in kit
     assert "build_macos.sh" in kit
     assert "release_macos.sh" in kit
+    assert "requirements-dev.txt" in kit
+    assert "pyproject.toml" in kit
     assert "annota_hotkey.swift" in kit
 
     assert "Screen Recording" in guide
@@ -45,17 +82,23 @@ def test_macos_release_support_contract():
 
 
 def test_macos_github_runner_qa_contract_and_no_artifact_storage():
-    workflow = (ROOT / ".github" / "workflows" / "macos-arm64-build.yml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "macos-arm64-build.yml").read_text(
+        encoding="utf-8"
+    )
     assert "runs-on: macos-15" in workflow
     assert "actions/checkout@v6" in workflow
     assert "actions/setup-python@v6" in workflow
     assert 'python-version: "3.13"' in workflow
-    assert 'ANNOTA_VERSION: "0.2.2"' in workflow
+    assert "requirements-dev.txt" in workflow
+    assert "pyproject.toml" in workflow
+    assert "ruff check main.py tests tools" in workflow
+    assert "ruff format --check main.py tests tools" in workflow
     assert "Compile native macOS hotkey helper" in workflow
     assert "swiftc tools/annota_hotkey.swift" in workflow
     assert "Verify native Option+Q registration" in workflow
     assert 'annota_hotkey "Option+Q"' in workflow
-    assert '--add-binary ".macos-native/annota_hotkey:."' in workflow
+    assert '--add-data "$PWD/assets:assets"' in workflow
+    assert '--add-binary "$PWD/.macos-native/annota_hotkey:."' in workflow
     assert "Build native Annota.app" in workflow
     assert "Packaged runtime self-test" in workflow
     assert "--self-test" in workflow

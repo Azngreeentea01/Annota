@@ -8,6 +8,8 @@ on:
     paths:
       - main.py
       - requirements.txt
+      - requirements-dev.txt
+      - pyproject.toml
       - build_macos.sh
       - release_macos.sh
       - assets/**
@@ -59,6 +61,7 @@ jobs:
         run: |
           set -euxo pipefail
           "$VENV/bin/python" -m pip install -r requirements.txt
+          "$VENV/bin/python" -m pip install -r requirements-dev.txt
 
       - name: Generate native icon resources
         run: |
@@ -68,11 +71,13 @@ jobs:
           iconutil -c icns assets/Annota.iconset -o assets/annota.icns
           test -f assets/annota.icns
 
-      - name: Compile and run full test suite
+      - name: Lint, compile, and run full test suite
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           set -euxo pipefail
+          "$VENV/bin/python" -m ruff check main.py tests tools
+          "$VENV/bin/python" -m ruff format --check main.py tests tools
           "$VENV/bin/python" -m compileall -q main.py tests tools
           "$VENV/bin/python" -m pytest -q
 
@@ -113,13 +118,14 @@ jobs:
           "$VENV/bin/python" -m PyInstaller \
             --noconfirm \
             --clean \
+            --specpath build \
             --windowed \
             --onedir \
             --name Annota \
             --osx-bundle-identifier net.softwify.annota \
-            --icon assets/annota.icns \
-            --add-data "assets:assets" \
-            --add-binary ".macos-native/annota_hotkey:." \
+            --icon "$PWD/assets/annota.icns" \
+            --add-data "$PWD/assets:assets" \
+            --add-binary "$PWD/.macos-native/annota_hotkey:." \
             main.py
           test -d dist/Annota.app
 

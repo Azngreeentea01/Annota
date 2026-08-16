@@ -27,6 +27,7 @@ STAGE="upgrade pip"
 
 STAGE="install Python dependencies"
 "$PYTHON" -m pip install -r requirements.txt
+"$PYTHON" -m pip install -r requirements-dev.txt
 
 STAGE="generate icon assets"
 "$PYTHON" tools/make_icons.py
@@ -38,6 +39,10 @@ if ! command -v iconutil >/dev/null 2>&1; then
 fi
 rm -f assets/annota.icns
 iconutil -c icns assets/Annota.iconset -o assets/annota.icns
+
+STAGE="lint and verify Python formatting"
+"$PYTHON" -m ruff check main.py tests tools
+"$PYTHON" -m ruff format --check main.py tests tools
 
 STAGE="compile Python source"
 "$PYTHON" -m compileall -q main.py tests tools
@@ -86,13 +91,14 @@ STAGE="build Annota.app with PyInstaller"
 "$PYTHON" -m PyInstaller \
   --noconfirm \
   --clean \
+  --specpath build \
   --windowed \
   --onedir \
   --name Annota \
   --osx-bundle-identifier net.softwify.annota \
-  --icon assets/annota.icns \
-  --add-data "assets:assets" \
-  --add-binary ".macos-native/annota_hotkey:." \
+  --icon "$PWD/assets/annota.icns" \
+  --add-data "$PWD/assets:assets" \
+  --add-binary "$PWD/.macos-native/annota_hotkey:." \
   main.py
 
 STAGE="verify Annota.app exists"
