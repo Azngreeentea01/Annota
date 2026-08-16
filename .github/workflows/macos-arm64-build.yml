@@ -47,10 +47,15 @@ jobs:
           python3 --version
           gh --version
 
-      - name: Build and test Annota
+      - name: Build native Annota.app
         run: |
           chmod +x build_macos.sh release_macos.sh
-          ./release_macos.sh
+          ./build_macos.sh
+
+      - name: Package macOS DMG
+        env:
+          ANNOTA_SKIP_BUILD: "1"
+        run: ./release_macos.sh
 
       - name: Verify app and DMG
         shell: bash
