@@ -32,6 +32,8 @@ xcopy "tests\*.py" "%STAGE%\tests\" /I /Y >nul
 if errorlevel 1 goto :fail
 xcopy "tools\*.py" "%STAGE%\tools\" /I /Y >nul
 if errorlevel 1 goto :fail
+copy /Y "tools\annota_hotkey.swift" "%STAGE%\tools\annota_hotkey.swift" >nul
+if errorlevel 1 goto :fail
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path '%STAGE%' -DestinationPath '%ZIP%' -CompressionLevel Optimal -Force"
 if errorlevel 1 goto :fail

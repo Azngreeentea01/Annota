@@ -43,8 +43,9 @@ The workflow:
 2. Selects Python 3.13.
 3. Compiles source and runs the full pytest suite.
 4. Builds and signs `Annota.app`, then verifies the bundle identifier `net.softwify.annota`.
-5. Runs the packaged `--self-test` and `--smoke-test` so an app that crashes immediately cannot be published.
-6. Creates the DMG plus SHA-256 and publishes them directly to a GitHub prerelease.
+5. Compiles the native Swift/Carbon global-hotkey helper and proves that `Option+Q` can be registered on the Apple Silicon runner.
+6. Runs the packaged `--self-test` and `--smoke-test` so an app that crashes immediately cannot be published.
+7. Creates the DMG plus SHA-256 and publishes them directly to a GitHub prerelease.
 
 It intentionally does not use `actions/upload-artifact` or GitHub Actions artifact storage. The GitHub-hosted build is still a release candidate until the real-Mac acceptance checklist below passes.
 
@@ -88,9 +89,9 @@ The release script submits the DMG, waits for notarization, and staples the resu
 Annota may require macOS privacy permissions for its desktop workflow:
 
 - **Screen Recording**: required for desktop capture.
-- **Accessibility**: may be required for the global Option+Q shortcut and automated paste into the current app.
+- **Accessibility**: may be required for automated paste into another app. The native Option+Q Quick Capture registration does not require Accessibility.
 
-Annota v0.2.2 includes a visible macOS setup window with permission status, request buttons, links to the correct Privacy & Security panes, and a Start Annotation button. This avoids a silent tray-only first launch when Option+Q is not yet authorized. Restart Annota once after granting Accessibility if macOS requires it.
+Annota v0.2.2 includes a visible macOS setup window with permission status, direct Settings access for changing Quick Capture, links to Privacy & Security, and a Start Annotation button. Quick Capture is registered by a bundled native macOS helper rather than relying on global keyboard monitoring. Restart Annota once after changing privacy permissions if macOS requests it.
 
 ## macOS acceptance checklist
 
@@ -98,7 +99,8 @@ Do not publish a macOS build until all of these pass on the actual release machi
 
 - `.app` launches without a console window.
 - Menu-bar/tray icon appears and Quit terminates fully.
-- Option+Q opens Annotation Mode.
+- Option+Q opens Annotation Mode through the bundled native macOS hotkey helper.
+- Settings is reachable from the setup window and changing Quick Capture applies without restarting Annota.
 - Capture works after Screen Recording permission is granted.
 - Selection, move, resize, note entry, multiple annotations, and Review work.
 - Retina rendering is sharp and marker/text sizing is correct.

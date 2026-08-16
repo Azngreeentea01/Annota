@@ -12,8 +12,8 @@ Annota is not production-ready until all automated checks pass and the platform-
 
 ## Global shortcut
 - Windows default: Alt+Q.
-- macOS target: Option+Q.
-- Custom shortcut saves and applies without restart.
+- macOS default: Option+Q through the native macOS hotkey helper.
+- Custom Quick Capture shortcut saves and applies without restart.
 - Reset restores the platform default.
 - Pause Shortcut disables global activation while tray Annotate Now remains available.
 - Invalid shortcut input is rejected.
@@ -182,7 +182,7 @@ Manually verify:
 - DMG and SHA-256 are generated.
 - DMG and SHA-256 are published directly to a GitHub prerelease.
 - `actions/upload-artifact` and `actions/download-artifact` are prohibited.
-- GitHub-hosted build remains a release candidate until real-Mac Screen Recording, Accessibility, Option+Q, menu-bar, Retina/multi-display, and real target-insertion acceptance tests pass.
+- GitHub-hosted build must compile the native hotkey helper and successfully register Option+Q before packaging. It remains a release candidate until real-Mac Screen Recording, Option+Q, Settings/change-shortcut, menu-bar, Retina/multi-display, Accessibility-assisted paste, and real target-insertion acceptance tests pass.
 
 ## Packaging
 - build.bat creates one-folder Windows build.
@@ -214,6 +214,7 @@ Manually verify:
 - v0.2.2 mandatory Review/session-reset source contract.
 - macOS app classification and source-browser routing tests.
 - macOS startup/permission/tray lifetime source contracts.
+- Direct macOS Settings/Quick Capture controls and native hotkey helper source/build contracts.
 - Packaged macOS runtime `--self-test` and timed `--smoke-test` are required in GitHub QA.
 
 ## Windows 11 acceptance results - v0.2.0 baseline - 2026-08-16
@@ -290,4 +291,13 @@ Changes required before the next production Mac release:
 - Add native macOS running-app classification for Codex/ChatGPT and safe source-browser reuse for an explicit web route.
 - Run packaged self-test and launch smoke test on the GitHub Apple Silicon runner before DMG publication.
 
-Current local source gate: Python compile PASS; 36 tests PASS on Windows. Physical-Mac acceptance remains required before converting the RC into a production release.
+Current local source gate: Python compile PASS; 39 tests PASS on Windows. Physical-Mac acceptance remains required before converting the RC into a production release.
+
+
+## macOS Quick Capture recovery QA - v0.2.2
+- Physical-Mac feedback: RC 5 exposed no convenient Settings path and Option+Q did not activate capture.
+- Setup window now includes a direct Settings button.
+- Settings names the field Quick Capture Shortcut and applies changes without restarting.
+- macOS capture activation now prefers a bundled native Swift/Carbon `RegisterEventHotKey` helper instead of pynput keyboard monitoring.
+- Accessibility is no longer treated as a prerequisite for the capture shortcut; it remains relevant to automatic paste.
+- GitHub Apple Silicon QA must compile the helper, successfully register Option+Q, package the helper inside Annota.app, pass runtime self-test, pass app launch smoke test, sign the bundle, build the DMG, and generate SHA-256 before another RC is published.

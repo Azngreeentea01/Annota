@@ -1,6 +1,6 @@
 # Annota
 
-Annota is a lightweight local-first desktop annotation utility for visual development feedback. On Windows, start from the desktop/File Explorer context menu, the system tray, or `Alt+Q`. On macOS, the target shortcut is `Option+Q`. Select visible UI regions, attach numbered comments, review the marked screenshot and every comment, then insert the image plus structured notes into Codex/ChatGPT for review before you send the chat message yourself.
+Annota is a lightweight local-first desktop annotation utility for visual development feedback. On Windows, start from the desktop/File Explorer context menu, the system tray, or `Alt+Q`. On macOS, the default Quick Capture shortcut is `Option+Q`. Select visible UI regions, attach numbered comments, review the marked screenshot and every comment, then insert the image plus structured notes into Codex/ChatGPT for review before you send the chat message yourself.
 
 ## Product principles
 - Invisible when idle, instant when activated, gone when finished.
@@ -15,13 +15,13 @@ Annota is a lightweight local-first desktop annotation utility for visual develo
 - Windows: `Alt+Q`
 - System tray/menu-bar tray: `Annotate Now`
 - Windows desktop/File Explorer background: right-click -> `Show more options` -> `Annota`
-- macOS target: `Option+Q`
+- macOS: `Option+Q` (native global Quick Capture shortcut)
 
 The Windows context-menu command launches Annotation Mode immediately. If Annota is already running in the tray, the second launch forwards the annotate request to the existing process instead of creating another tray instance.
 
 Windows 11 note: the current unpackaged EXE uses the standard per-user Win32 shell verb, so Windows 11 shows it under `Show more options`. A future MSIX/sparse-package shell extension can promote Annota into the modern first-level Windows 11 context menu.
 
-The keyboard shortcut can be changed, reset, paused, and checked for common Windows conflicts.
+The Quick Capture shortcut can be changed, reset, and paused in Settings. On macOS, Settings is available directly from the visible setup window as well as the menu-bar menu.
 
 ## Current annotation workflow
 1. Annota runs in the system tray/menu-bar tray.
@@ -89,8 +89,8 @@ The JSON payload includes:
 - local paths to the PNG and TXT payload
 
 ## Settings
-- Change shortcut
-- Reset shortcut
+- Change Quick Capture shortcut
+- Reset Quick Capture shortcut
 - Detect common Windows shortcut conflicts
 - Start with Windows
 - Pause global shortcut
@@ -150,7 +150,7 @@ chmod +x build_macos.sh release_macos.sh
 ./release_macos.sh
 ```
 
-A production macOS release must be built and acceptance-tested on an actual Mac. In v0.2.2, Annota shows a macOS setup window when Screen Recording or Accessibility is missing, provides a Start Annotation button that does not depend on the global shortcut, and keeps clipboard fallback available if automatic insertion cannot be authorized.
+A production macOS release must be built and acceptance-tested on an actual Mac. In v0.2.2, Annota shows a macOS setup window with direct Settings access, provides a Start Annotation button, uses a bundled native macOS global-hotkey helper for Quick Capture, and keeps clipboard fallback available if automatic insertion cannot be authorized. Accessibility is for automatic paste behavior; the native Quick Capture shortcut itself does not depend on Accessibility.
 
 For ARM64 release-candidate builds, `.github/workflows/macos-arm64-build.yml` uses GitHub's standard `macos-15` Apple Silicon runner. It publishes the DMG and SHA-256 directly to a GitHub prerelease and intentionally does not use Actions artifact storage. A real-Mac acceptance pass is still required before production release.
 
@@ -160,7 +160,7 @@ Screen capture happens only after explicit annotation activation. No capture is 
 ## Version status
 - `v0.2.0`: packaged Windows baseline and initial macOS build-kit baseline.
 - `v0.2.1` development: new comment-card action flow, **+ New Annotation**, mandatory Review before insertion, destination-aware **Auto Send**, and route-label persistence/reset behavior.
-- macOS `v0.2.1` release remains gated on native Mac build and acceptance testing.
+- macOS `v0.2.2` recovery RCs add first-run setup, direct Quick Capture settings, native macOS hotkey registration, permission checks, packaged launch QA, and physical-Mac acceptance gating.
 
 ## License
 MIT. See `LICENSE`.

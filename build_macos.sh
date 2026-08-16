@@ -45,6 +45,40 @@ STAGE="compile Python source"
 STAGE="run pytest suite"
 QT_QPA_PLATFORM=offscreen "$PYTHON" -m pytest -q
 
+STAGE="compile native macOS global-hotkey helper"
+rm -rf .macos-native
+mkdir -p .macos-native
+swiftc tools/annota_hotkey.swift -o .macos-native/annota_hotkey
+chmod +x .macos-native/annota_hotkey
+test -x .macos-native/annota_hotkey
+
+STAGE="verify native Option+Q registration"
+rm -f .macos-native/hotkey.out .macos-native/hotkey.err
+.macos-native/annota_hotkey "Option+Q" >.macos-native/hotkey.out 2>.macos-native/hotkey.err &
+HOTKEY_PID=$!
+HOTKEY_READY=0
+for _ in {1..30}; do
+  if grep -q '^READY Option+Q$' .macos-native/hotkey.out 2>/dev/null; then
+    HOTKEY_READY=1
+    break
+  fi
+  if ! kill -0 "$HOTKEY_PID" 2>/dev/null; then
+    cat .macos-native/hotkey.err || true
+    exit 1
+  fi
+  sleep 0.1
+done
+if [[ "$HOTKEY_READY" != "1" ]]; then
+  cat .macos-native/hotkey.out || true
+  cat .macos-native/hotkey.err || true
+  kill "$HOTKEY_PID" 2>/dev/null || true
+  wait "$HOTKEY_PID" 2>/dev/null || true
+  echo "Native Option+Q helper did not report READY."
+  exit 1
+fi
+kill "$HOTKEY_PID" 2>/dev/null || true
+wait "$HOTKEY_PID" 2>/dev/null || true
+
 STAGE="clean previous macOS build"
 rm -rf build dist/Annota.app
 
@@ -58,6 +92,7 @@ STAGE="build Annota.app with PyInstaller"
   --osx-bundle-identifier net.softwify.annota \
   --icon assets/annota.icns \
   --add-data "assets:assets" \
+  --add-binary ".macos-native/annota_hotkey:." \
   main.py
 
 STAGE="verify Annota.app exists"

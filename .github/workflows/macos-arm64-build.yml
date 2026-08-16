@@ -76,6 +76,36 @@ jobs:
           "$VENV/bin/python" -m compileall -q main.py tests tools
           "$VENV/bin/python" -m pytest -q
 
+      - name: Compile native macOS hotkey helper
+        run: |
+          set -euxo pipefail
+          rm -rf .macos-native
+          mkdir -p .macos-native
+          swiftc tools/annota_hotkey.swift -o .macos-native/annota_hotkey
+          chmod +x .macos-native/annota_hotkey
+          test -x .macos-native/annota_hotkey
+
+      - name: Verify native Option+Q registration
+        run: |
+          set -euxo pipefail
+          .macos-native/annota_hotkey "Option+Q" >.macos-native/hotkey.out 2>.macos-native/hotkey.err &
+          PID=$!
+          READY=0
+          for _ in {1..30}; do
+            if grep -q '^READY Option+Q$' .macos-native/hotkey.out 2>/dev/null; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$PID" 2>/dev/null; then
+              cat .macos-native/hotkey.err || true
+              exit 1
+            fi
+            sleep 0.1
+          done
+          test "$READY" = "1"
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+
       - name: Build native Annota.app
         run: |
           set -euxo pipefail
@@ -89,6 +119,7 @@ jobs:
             --osx-bundle-identifier net.softwify.annota \
             --icon assets/annota.icns \
             --add-data "assets:assets" \
+            --add-binary ".macos-native/annota_hotkey:." \
             main.py
           test -d dist/Annota.app
 
@@ -148,4 +179,4 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "Annota v${ANNOTA_VERSION} macOS QA RC ${GITHUB_RUN_NUMBER}" \
             --prerelease \
-            --notes "macOS ARM64 QA release candidate. The GitHub Apple Silicon runner passed source compilation, the full pytest suite, PyInstaller packaging, code-sign verification, packaged runtime self-test, packaged launch smoke test, DMG creation, and SHA-256 generation. This is intentionally a prerelease until the physical-Mac acceptance test confirms first launch, Screen Recording permission, Accessibility permission, Option+Q, menu-bar controls, annotation/review flow, Retina behavior, and chat insertion/fallback."
+            --notes "macOS ARM64 QA release candidate. The GitHub Apple Silicon runner passed source compilation, the full pytest suite, native Option+Q registration, PyInstaller packaging, code-sign verification, packaged runtime self-test, packaged launch smoke test, DMG creation, and SHA-256 generation. This is intentionally a prerelease until the physical-Mac acceptance test confirms first launch, Screen Recording permission, Accessibility permission, Option+Q, menu-bar controls, annotation/review flow, Retina behavior, and chat insertion/fallback."

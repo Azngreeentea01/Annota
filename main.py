@@ -15,6 +15,7 @@ import platform
 import plistlib
 import queue
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -82,6 +83,7 @@ def _runtime_root() -> Path:
 ASSET_DIR = _runtime_root() / "assets"
 ICON_PATH = ASSET_DIR / "annota.svg"
 SEND_ICON_PATH = ASSET_DIR / "send.svg"
+HOTKEY_HELPER_PATH = _runtime_root() / "annota_hotkey"
 
 APP_STYLE = r"""
 QWidget { font-family: '.AppleSystemUIFont', 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', sans-serif; font-size: 10.5pt; color: #1D1930; }
@@ -977,9 +979,10 @@ def configure_macos_startup(enabled: bool) -> None:
 
 class MacSetupDialog(QDialog):
     startRequested = Signal()
+    settingsRequested = Signal()
     permissionsChanged = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, shortcut: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Annota for macOS")
         self.setWindowIcon(QIcon(str(ICON_PATH)))
@@ -995,8 +998,10 @@ class MacSetupDialog(QDialog):
         intro.setObjectName("muted")
         intro.setWordWrap(True)
         root.addWidget(intro)
+        self.shortcut_status = QLabel(f"Quick Capture Shortcut: {shortcut}  -  starting...")
         self.screen_status = QLabel()
         self.access_status = QLabel()
+        root.addWidget(self.shortcut_status)
         root.addWidget(self.screen_status)
         root.addWidget(self.access_status)
 
@@ -1022,17 +1027,21 @@ class MacSetupDialog(QDialog):
         access_row.addWidget(open_access)
         root.addLayout(access_row)
 
-        note = QLabel(f"Default shortcut: {default_shortcut()}. After changing a privacy permission, click Refresh. If the shortcut still does not respond, quit and reopen Annota once.")
+        note = QLabel("Quick Capture uses a native macOS global shortcut. Accessibility is only needed for automatic paste into another app, not for the capture shortcut itself.")
         note.setObjectName("muted")
         note.setWordWrap(True)
         root.addWidget(note)
         footer = QHBoxLayout()
-        refresh = QPushButton("Refresh Permissions")
+        settings = QPushButton("Settings")
+        settings.setObjectName("secondaryButton")
+        refresh = QPushButton("Refresh")
         refresh.setObjectName("secondaryButton")
         annotate = QPushButton("Start Annotation")
         annotate.setObjectName("primaryButton")
+        settings.clicked.connect(self.settingsRequested)
         refresh.clicked.connect(self._refresh)
         annotate.clicked.connect(self.startRequested)
+        footer.addWidget(settings)
         footer.addWidget(refresh)
         footer.addStretch(1)
         footer.addWidget(annotate)
@@ -1050,9 +1059,12 @@ class MacSetupDialog(QDialog):
     def _refresh(self):
         status = macos_permission_status()
         self.screen_status.setText(f"Screen Recording: {'Ready' if status['screen_recording'] else 'Permission required'}")
-        keyboard_ready = status["accessibility"]
-        self.access_status.setText(f"Accessibility / global shortcut: {'Ready' if keyboard_ready else 'Permission required'}")
+        paste_ready = status["accessibility"] or status["post_events"]
+        self.access_status.setText(f"Accessibility / automatic paste: {'Ready' if paste_ready else 'Optional permission not granted'}")
         self.permissionsChanged.emit()
+
+    def set_shortcut_status(self, text: str):
+        self.shortcut_status.setText(f"Quick Capture Shortcut: {text}")
 
 
 class SettingsDialog(QDialog):
@@ -1072,8 +1084,8 @@ class SettingsDialog(QDialog):
         subtitle = QLabel("Keep Annota fast, quiet, and ready when you need it."); subtitle.setObjectName("muted"); root.addWidget(subtitle)
         shortcut_card = QFrame(); shortcut_card.setObjectName("settingsCard")
         shortcut_layout = QVBoxLayout(shortcut_card); shortcut_layout.setContentsMargins(16,14,16,14); shortcut_layout.setSpacing(9)
-        shortcut_label = QLabel("Shortcut"); shortcut_label.setObjectName("sectionTitle")
-        hint = QLabel("Customize Quick Annotate. Annota validates the shortcut before saving."); hint.setWordWrap(True); hint.setObjectName("muted")
+        shortcut_label = QLabel("Quick Capture Shortcut"); shortcut_label.setObjectName("sectionTitle")
+        hint = QLabel("Change the global shortcut used to start a capture. On macOS the packaged app uses a native system hotkey, so Accessibility is not required just to trigger capture."); hint.setWordWrap(True); hint.setObjectName("muted")
         shortcut_layout.addWidget(shortcut_label); shortcut_layout.addWidget(hint)
         row = QHBoxLayout(); self.shortcut = QLineEdit(self.settings.value("shortcut", default_shortcut())); self.shortcut.setPlaceholderText(default_shortcut())
         reset = QPushButton("Reset"); reset.setObjectName("secondaryButton"); reset.clicked.connect(lambda: self.shortcut.setText(default_shortcut()))
@@ -1095,6 +1107,8 @@ class SettingsDialog(QDialog):
         shortcut = normalize_shortcut(self.shortcut.text().strip())
         if not shortcut:
             QMessageBox.warning(self, APP_NAME, f"Enter a valid shortcut such as {default_shortcut()}."); return
+        if is_macos() and not macos_hotkey_supported(shortcut):
+            QMessageBox.warning(self, APP_NAME, "On macOS, Quick Capture currently supports A-Z, 0-9, and F1-F20 with Option, Ctrl, Shift, or Cmd modifiers."); return
         current = normalize_shortcut(str(self.settings.value("shortcut", default_shortcut())))
         if shortcut != current and shortcut_conflicts(shortcut):
             QMessageBox.warning(self, APP_NAME, f"{shortcut} appears to be in use by the operating system or another application. Choose a different shortcut."); return
@@ -1109,17 +1123,93 @@ class SettingsDialog(QDialog):
 
 class GlobalHotkey:
     def __init__(self, callback: Callable):
-        self.callback = callback; self.listener = None; self.sequence = ""
+        self.callback = callback
+        self.listener = None
+        self.sequence = ""
+        self.mac_process = None
+        self.mac_ready = False
+        self.last_error = ""
+
     def set_sequence(self, sequence: str):
-        self.stop(); self.sequence = sequence
-        if keyboard is None: return
-        spec = to_pynput_hotkey(sequence)
-        if not spec: return
-        self.listener = keyboard.GlobalHotKeys({spec: self.callback}); self.listener.start()
+        self.stop()
+        self.sequence = normalize_shortcut(str(sequence)) or str(sequence)
+        self.last_error = ""
+        if is_macos() and HOTKEY_HELPER_PATH.exists():
+            try:
+                self.mac_process = subprocess.Popen(
+                    [str(HOTKEY_HELPER_PATH), self.sequence],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
+                )
+                threading.Thread(target=self._monitor_macos_helper, daemon=True).start()
+                return
+            except Exception as exc:
+                self.last_error = f"Native shortcut helper failed to start: {exc}"
+                self.mac_process = None
+        if keyboard is None:
+            if not self.last_error:
+                self.last_error = "Keyboard backend unavailable"
+            return
+        spec = to_pynput_hotkey(self.sequence)
+        if not spec:
+            self.last_error = "Invalid shortcut"
+            return
+        try:
+            self.listener = keyboard.GlobalHotKeys({spec: self.callback})
+            self.listener.start()
+        except Exception as exc:
+            self.listener = None
+            self.last_error = f"Shortcut listener failed: {exc}"
+
+    def _monitor_macos_helper(self):
+        process = self.mac_process
+        if process is None or process.stdout is None:
+            return
+        try:
+            for raw in process.stdout:
+                line = raw.strip()
+                if line.startswith("READY"):
+                    self.mac_ready = True
+                    self.last_error = ""
+                elif line == "TRIGGER":
+                    self.callback()
+        finally:
+            if process.poll() is not None and not self.mac_ready and process.stderr is not None:
+                error = process.stderr.read().strip()
+                if error:
+                    self.last_error = error.replace("ERROR ", "")
+            self.mac_ready = False
+
+    def status_text(self) -> str:
+        if not self.sequence:
+            return "Not configured"
+        if self.mac_ready and self.mac_process is not None and self.mac_process.poll() is None:
+            return f"{self.sequence}  -  Active (native macOS)"
+        if self.listener is not None:
+            return f"{self.sequence}  -  Active"
+        if self.last_error:
+            return f"{self.sequence}  -  {self.last_error}"
+        return f"{self.sequence}  -  Starting..."
+
     def stop(self):
+        self.mac_ready = False
+        if self.mac_process is not None:
+            try:
+                self.mac_process.terminate()
+                self.mac_process.wait(timeout=1.5)
+            except Exception:
+                try:
+                    self.mac_process.kill()
+                except Exception:
+                    pass
+            self.mac_process = None
         if self.listener:
-            try: self.listener.stop()
-            except Exception: pass
+            try:
+                self.listener.stop()
+            except Exception:
+                pass
             self.listener = None
 
 
@@ -1162,16 +1252,21 @@ class AnnotaApp:
         if not is_macos(): return
         if self.mac_setup_dialog and self.mac_setup_dialog.isVisible():
             self.mac_setup_dialog.raise_(); self.mac_setup_dialog.activateWindow(); return
-        self.mac_setup_dialog = MacSetupDialog()
+        sequence = str(self.settings.value("shortcut", default_shortcut()))
+        self.mac_setup_dialog = MacSetupDialog(sequence)
         self.mac_setup_dialog.startRequested.connect(lambda: self.activate_annotation(force=True))
+        self.mac_setup_dialog.settingsRequested.connect(self.open_settings)
         self.mac_setup_dialog.permissionsChanged.connect(self._refresh_macos_permissions)
         self.mac_setup_dialog.show(); self.mac_setup_dialog.raise_(); self.mac_setup_dialog.activateWindow()
+        QTimer.singleShot(500, self._refresh_macos_hotkey_status)
 
     def _refresh_macos_permissions(self):
         if not is_macos(): return
-        status = macos_permission_status()
-        if status["accessibility"] and not self.pause_action.isChecked():
-            self.hotkey.set_sequence(self.settings.value("shortcut", default_shortcut()))
+        self._refresh_macos_hotkey_status()
+
+    def _refresh_macos_hotkey_status(self):
+        if self.mac_setup_dialog and self.mac_setup_dialog.isVisible():
+            self.mac_setup_dialog.set_shortcut_status(self.hotkey.status_text())
 
     def activate_annotation(self, force: bool = False):
         if self.pause_action.isChecked() and not force: return
@@ -1218,7 +1313,11 @@ class AnnotaApp:
     def _update_hotkey(self, sequence: str):
         self._update_annotate_action()
         if not self.pause_action.isChecked(): self.hotkey.set_sequence(sequence)
-        self.tray.showMessage("Annota", f"Quick Annotate shortcut set to {sequence}.", QSystemTrayIcon.Information, 2500)
+        if is_macos():
+            QTimer.singleShot(500, self._refresh_macos_hotkey_status)
+            self._show_toast("Quick Capture shortcut updated", f"Quick Capture is now set to {sequence}.", 3200)
+        else:
+            self.tray.showMessage("Annota", f"Quick Annotate shortcut set to {sequence}.", QSystemTrayIcon.Information, 2500)
     def _set_pause_from_settings(self, paused: bool): self.pause_action.setChecked(paused)
     def _pause_hotkey(self, paused: bool):
         self.settings.setValue("behavior/pause_shortcut", paused)
@@ -1257,6 +1356,18 @@ def to_pynput_hotkey(sequence: str) -> str:
         output.append(mapping[part])
     output.append(parts[-1]); return "+".join(output)
 
+
+
+def macos_hotkey_supported(sequence: str) -> bool:
+    normalized = normalize_shortcut(sequence)
+    if not normalized:
+        return False
+    key = normalized.split("+")[-1]
+    if len(key) == 1 and key.isalnum():
+        return True
+    if key.startswith("F") and key[1:].isdigit():
+        return 1 <= int(key[1:]) <= 20
+    return False
 
 def shortcut_conflicts(sequence: str) -> bool:
     if platform.system() != "Windows": return False
@@ -1567,6 +1678,7 @@ def _add_send_route_menu(root, send_button: Optional[QPushButton] = None):
 def _runtime_self_test() -> int:
     result = {"platform": platform.system(), "version": APP_VERSION, "icon_exists": ICON_PATH.exists(), "send_icon_exists": SEND_ICON_PATH.exists(), "keyboard_backend": keyboard is not None}
     if is_macos():
+        result["native_hotkey_helper"] = HOTKEY_HELPER_PATH.exists() and os.access(HOTKEY_HELPER_PATH, os.X_OK)
         result["permissions"] = macos_permission_status()
         try:
             import AppKit  # noqa: F401
@@ -1577,7 +1689,7 @@ def _runtime_self_test() -> int:
             result["mac_frameworks"] = False
     print(json.dumps(result, sort_keys=True))
     ok = result["icon_exists"] and result["send_icon_exists"] and result["keyboard_backend"]
-    if is_macos(): ok = ok and result.get("mac_frameworks", False)
+    if is_macos(): ok = ok and result.get("mac_frameworks", False) and result.get("native_hotkey_helper", False)
     return 0 if ok else 1
 
 

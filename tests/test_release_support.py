@@ -22,6 +22,9 @@ def test_macos_release_support_contract():
     assert 'VERSION="0.2.2"' in build
     assert 'VERSION="0.2.2"' in release
     assert "iconutil -c icns" in build
+    assert "swiftc tools/annota_hotkey.swift" in build
+    assert 'annota_hotkey "Option+Q"' in build
+    assert '--add-binary ".macos-native/annota_hotkey:."' in build
     assert "--osx-bundle-identifier net.softwify.annota" in build
     assert "dist/Annota.app" in build
     assert "MACOS_CODESIGN_IDENTITY" in build
@@ -34,6 +37,7 @@ def test_macos_release_support_contract():
     assert "macOS-Build-Kit.zip" in kit
     assert "build_macos.sh" in kit
     assert "release_macos.sh" in kit
+    assert "annota_hotkey.swift" in kit
 
     assert "Screen Recording" in guide
     assert "Accessibility" in guide
@@ -47,6 +51,11 @@ def test_macos_github_runner_qa_contract_and_no_artifact_storage():
     assert "actions/setup-python@v6" in workflow
     assert 'python-version: "3.13"' in workflow
     assert 'ANNOTA_VERSION: "0.2.2"' in workflow
+    assert "Compile native macOS hotkey helper" in workflow
+    assert "swiftc tools/annota_hotkey.swift" in workflow
+    assert "Verify native Option+Q registration" in workflow
+    assert 'annota_hotkey "Option+Q"' in workflow
+    assert '--add-binary ".macos-native/annota_hotkey:."' in workflow
     assert "Build native Annota.app" in workflow
     assert "Packaged runtime self-test" in workflow
     assert "--self-test" in workflow

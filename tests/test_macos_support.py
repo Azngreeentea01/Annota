@@ -1,6 +1,15 @@
 from pathlib import Path
 
+from PySide6.QtWidgets import QApplication, QPushButton
+
 import main
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _app():
+    return QApplication.instance() or QApplication([])
 
 
 def test_macos_app_classification_contract():
@@ -30,12 +39,46 @@ def test_configure_startup_routes_to_macos_helper(monkeypatch):
     assert called == [True]
 
 
+def test_macos_native_hotkey_supported_keys():
+    assert main.macos_hotkey_supported("Option+Q")
+    assert main.macos_hotkey_supported("Cmd+Shift+A")
+    assert main.macos_hotkey_supported("Ctrl+Option+F8")
+    assert main.macos_hotkey_supported("Option+9")
+    assert not main.macos_hotkey_supported("Option+F21")
+    assert not main.macos_hotkey_supported("Option+;")
+
+
+def test_macos_setup_has_settings_and_start_annotation_controls():
+    _app()
+    dialog = main.MacSetupDialog("Option+Q")
+    labels = {button.text() for button in dialog.findChildren(QPushButton)}
+    assert "Settings" in labels
+    assert "Start Annotation" in labels
+    assert "Refresh" in labels
+    assert "Allow Screen Recording" in labels
+    dialog.close()
+
+
+def test_native_hotkey_swift_source_contract():
+    source = (ROOT / "tools" / "annota_hotkey.swift").read_text(encoding="utf-8")
+    assert "RegisterEventHotKey" in source
+    assert "kEventHotKeyPressed" in source
+    assert 'print("READY \\(shortcut)")' in source
+    assert 'print("TRIGGER")' in source
+    assert '"Q": 12' in source
+
+
 def test_macos_runtime_reliability_source_contract():
-    source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
     assert 'APP_VERSION = "0.2.2"' in source
     assert "self.tray_menu = QMenu()" in source
     assert "CGPreflightScreenCaptureAccess" in source
     assert "AXIsProcessTrusted" in source
     assert "Start Annotation" in source
+    assert "Quick Capture Shortcut" in source
+    assert "settingsRequested = Signal()" in source
+    assert "HOTKEY_HELPER_PATH" in source
+    assert "subprocess.Popen" in source
+    assert "Active (native macOS)" in source
     assert "--self-test" in source
     assert "--smoke-test" in source

@@ -13,3 +13,5 @@ assets/annota.icns
 releases/**/*.zip
 releases/**/*.dmg
 releases/**/*.sha256
+
+.macos-native/
