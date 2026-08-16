@@ -41,9 +41,10 @@ The workflow:
 
 1. Checks out the repository.
 2. Selects Python 3.13.
-3. Runs `release_macos.sh`, which compiles source, runs pytest, builds `Annota.app`, verifies its code signature, and creates the DMG plus SHA-256.
-4. Verifies the bundle identifier `net.softwify.annota`.
-5. Publishes the DMG and SHA-256 directly to a GitHub prerelease.
+3. Compiles source and runs the full pytest suite.
+4. Builds and signs `Annota.app`, then verifies the bundle identifier `net.softwify.annota`.
+5. Runs the packaged `--self-test` and `--smoke-test` so an app that crashes immediately cannot be published.
+6. Creates the DMG plus SHA-256 and publishes them directly to a GitHub prerelease.
 
 It intentionally does not use `actions/upload-artifact` or GitHub Actions artifact storage. The GitHub-hosted build is still a release candidate until the real-Mac acceptance checklist below passes.
 
@@ -65,8 +66,8 @@ export MACOS_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 Output names are architecture-specific, for example:
 
 ```text
-releases/v0.2.1/Annota-v0.2.1-macOS-arm64.dmg
-releases/v0.2.1/Annota-v0.2.1-macOS-arm64.dmg.sha256
+releases/v0.2.2/Annota-v0.2.2-macOS-arm64.dmg
+releases/v0.2.2/Annota-v0.2.2-macOS-arm64.dmg.sha256
 ```
 
 On an Intel Mac the architecture suffix will be `x86_64`.
@@ -89,7 +90,7 @@ Annota may require macOS privacy permissions for its desktop workflow:
 - **Screen Recording**: required for desktop capture.
 - **Accessibility**: may be required for the global Option+Q shortcut and automated paste into the current app.
 
-Open System Settings -> Privacy & Security if macOS prompts for either permission. Restart Annota after granting a permission if macOS requests it.
+Annota v0.2.2 includes a visible macOS setup window with permission status, request buttons, links to the correct Privacy & Security panes, and a Start Annotation button. This avoids a silent tray-only first launch when Option+Q is not yet authorized. Restart Annota once after granting Accessibility if macOS requires it.
 
 ## macOS acceptance checklist
 
@@ -111,4 +112,4 @@ Do not publish a macOS build until all of these pass on the actual release machi
 
 ## Current release status
 
-The macOS build and packaging path is present in the project, but a production macOS binary must be generated and acceptance-tested on macOS. Windows cannot produce or validate the final native `.app`/`.dmg` release.
+v0.2.2 is the macOS recovery line after v0.2.1 failed physical-Mac use. GitHub-hosted ARM64 QA must pass compilation, tests, packaged self-test, packaged launch smoke test, signing, DMG creation, and checksum generation before an RC is published. The RC remains a prerelease until a physical-Mac acceptance pass confirms launch, permissions, menu-bar controls, Option+Q, annotation/review, and insertion/fallback behavior.

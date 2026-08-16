@@ -19,8 +19,8 @@ def test_macos_release_support_contract():
     kit = (ROOT / "release_macos_kit.bat").read_text(encoding="utf-8")
     guide = (ROOT / "MACOS_RELEASE.md").read_text(encoding="utf-8")
 
-    assert 'VERSION="0.2.1"' in build
-    assert 'VERSION="0.2.1"' in release
+    assert 'VERSION="0.2.2"' in build
+    assert 'VERSION="0.2.2"' in release
     assert "iconutil -c icns" in build
     assert "--osx-bundle-identifier net.softwify.annota" in build
     assert "dist/Annota.app" in build
@@ -40,17 +40,21 @@ def test_macos_release_support_contract():
     assert "macOS acceptance checklist" in guide
 
 
-def test_macos_github_runner_build_does_not_use_actions_artifact_storage():
+def test_macos_github_runner_qa_contract_and_no_artifact_storage():
     workflow = (ROOT / ".github" / "workflows" / "macos-arm64-build.yml").read_text(encoding="utf-8")
     assert "runs-on: macos-15" in workflow
     assert "actions/checkout@v6" in workflow
     assert "actions/setup-python@v6" in workflow
     assert 'python-version: "3.13"' in workflow
+    assert 'ANNOTA_VERSION: "0.2.2"' in workflow
     assert "Build native Annota.app" in workflow
+    assert "Packaged runtime self-test" in workflow
+    assert "--self-test" in workflow
+    assert "Packaged launch smoke test" in workflow
+    assert "--smoke-test" in workflow
     assert "hdiutil create" in workflow
     assert "gh release create" in workflow
-    assert "--draft" in workflow
-    assert "gh release upload" in workflow
+    assert "--prerelease" in workflow
     assert "actions/upload-artifact" not in workflow
     assert "actions/download-artifact" not in workflow
 

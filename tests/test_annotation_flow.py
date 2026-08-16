@@ -138,9 +138,9 @@ def test_review_footer_uses_new_annotation_not_add_another():
     review.close()
 
 
-def test_v021_review_gate_and_session_reset_source_contract():
+def test_v022_review_gate_and_session_reset_source_contract():
     source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
-    assert main.APP_VERSION == "0.2.1"
+    assert main.APP_VERSION == "0.2.2"
     assert "def closeEvent(self, event):" in source
     assert "_clear_pending_send_route()" in source
     assert "if not self.review_card or not self.review_card.isVisible():" in source

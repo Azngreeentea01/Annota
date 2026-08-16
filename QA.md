@@ -211,7 +211,10 @@ Manually verify:
 - Review final send commits the route.
 - Review reset to Auto Send.
 - Review footer New Annotation naming contract.
-- v0.2.1 mandatory Review/session-reset source contract.
+- v0.2.2 mandatory Review/session-reset source contract.
+- macOS app classification and source-browser routing tests.
+- macOS startup/permission/tray lifetime source contracts.
+- Packaged macOS runtime `--self-test` and timed `--smoke-test` are required in GitHub QA.
 
 ## Windows 11 acceptance results - v0.2.0 baseline - 2026-08-16
 Environment: Windows 11 VM, 1470x923 logical desktop, 100% scaling.
@@ -270,3 +273,21 @@ Environment: Windows 11 VM, 1470x923 logical desktop, 100% scaling.
 15. Test Escape/cancel at every stage and verify a cancelled session resets to Auto Send.
 16. Test shortcut change/reset/conflict/pause.
 17. Build one-folder EXE locally and repeat the workflow from the packaged EXE.
+
+
+## macOS recovery QA - v0.2.2 - 2026-08-16
+Reason: v0.2.1 built successfully but failed physical-Mac use. A successful DMG build alone is no longer accepted as evidence that the app works.
+
+Changes required before the next production Mac release:
+- Keep the QSystemTrayIcon context menu alive for the full process lifetime (`self.tray_menu`).
+- Show a visible macOS setup window when Screen Recording or Accessibility is missing.
+- Provide Start Annotation without relying on Option+Q.
+- Preflight/request Screen Recording before capture rather than silently producing a bad capture.
+- Preflight/request Accessibility before relying on the global shortcut or synthetic paste.
+- Provide direct links to macOS Privacy & Security panes.
+- Support macOS Start at login with a per-user LaunchAgent.
+- Preserve safe clipboard fallback if a target cannot be focused or permissions are incomplete.
+- Add native macOS running-app classification for Codex/ChatGPT and safe source-browser reuse for an explicit web route.
+- Run packaged self-test and launch smoke test on the GitHub Apple Silicon runner before DMG publication.
+
+Current local source gate: Python compile PASS; 36 tests PASS on Windows. Physical-Mac acceptance remains required before converting the RC into a production release.
