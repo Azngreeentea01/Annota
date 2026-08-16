@@ -1,6 +1,6 @@
 # Annota
 
-Annota is a lightweight local-first desktop annotation utility for visual development feedback. On Windows, start from the desktop/File Explorer context menu, the system tray, or `Alt+Q`. On macOS, the target shortcut is `Option+Q`. Select any visible UI region, attach numbered notes, review the marked screenshot, and insert the image plus structured notes for review before sending.
+Annota is a lightweight local-first desktop annotation utility for visual development feedback. On Windows, start from the desktop/File Explorer context menu, the system tray, or `Alt+Q`. On macOS, the target shortcut is `Option+Q`. Select visible UI regions, attach numbered comments, review the marked screenshot and every comment, then insert the image plus structured notes into Codex/ChatGPT for review before you send the chat message yourself.
 
 ## Product principles
 - Invisible when idle, instant when activated, gone when finished.
@@ -9,6 +9,7 @@ Annota is a lightweight local-first desktop annotation utility for visual develo
 - No Electron or Chromium embedding.
 - No telemetry, account, cloud dependency, continuous recording, or background AI.
 - Annota never presses the final chat Send button automatically.
+- Annota never bypasses its own Review screen before inserting an annotation payload.
 
 ## Ways to start an annotation
 - Windows: `Alt+Q`
@@ -22,21 +23,27 @@ Windows 11 note: the current unpackaged EXE uses the standard per-user Win32 she
 
 The keyboard shortcut can be changed, reset, paused, and checked for common Windows conflicts.
 
-## Current workflow
+## Current annotation workflow
 1. Annota runs in the system tray/menu-bar tray.
 2. Start Annotation Mode with the platform shortcut or `Annotate Now`. Windows also supports the right-click `Annota` command.
 3. The monitor under the pointer is captured once, dimmed, and outlined in lavender.
-4. Drag a region around the UI issue.
-5. Move the selection by dragging inside it or resize from any corner.
-6. Add a note and save it.
-7. Add more numbered annotations as needed.
-8. Open Review to see the annotated screenshot beside the numbered note list.
-9. Click `Send` for automatic destination selection where supported, or use the small arrow beside Send to choose a destination for this send only.
-10. Annota creates PNG, TXT, and JSON payload files and inserts/copies the image plus notes according to the available route.
-11. Review the composer and send manually.
+4. Drag a region around the UI issue, then move or resize the selection if needed.
+5. Enter the comment in **What should change?**.
+6. Choose one of the actions directly on the comment card:
+   - **+ New Annotation** saves the current comment and immediately returns to selection mode so another region can be marked.
+   - **Auto Send** saves the current comment and opens Review. It does **not** insert anything yet.
+   - Use the arrow beside Auto Send to select Codex, ChatGPT desktop, ChatGPT web, or manual paste. Selecting a destination changes the main button label, but still does not insert anything yet.
+7. Repeat **+ New Annotation** as many times as needed. Markers and comments remain numbered `1, 2, 3...`.
+8. When Auto Send or a selected destination is chosen, Annota opens **Review your annotations**.
+9. Review shows the complete annotated screenshot on the left and every matching numbered comment on the right.
+10. From Review, choose **+ New Annotation** to continue, **Cancel** to return without sending, or the final **Auto Send / Send to ...** button to insert the payload.
+11. Only that final Review action creates the PNG/TXT/JSON payload and performs destination routing.
+12. Review the destination composer and press the chat application's final Send button yourself.
+
+`Ctrl+Enter` cannot bypass Review; when annotations are ready it opens Review instead of sending directly.
 
 ## Smart Send routing
-On Windows, a normal `Send` click uses this priority:
+The default primary action is **Auto Send**. On Windows it uses this destination priority after Review confirmation:
 1. Codex view/window
 2. ChatGPT desktop
 3. ChatGPT web in a supported browser
@@ -44,13 +51,27 @@ On Windows, a normal `Send` click uses this priority:
 
 If Codex and ChatGPT are both available, Codex wins automatically.
 
-The Send arrow provides one-send overrides:
+The arrow beside Auto Send provides one-send choices:
+- Auto Send (Recommended)
 - Send to Codex
 - Send to ChatGPT desktop
 - Send to ChatGPT web
 - Copy for manual paste
 
+Choosing a specific destination changes the primary button label, for example from `Auto Send` to `Send to Codex`. The selection carries through additional annotations and into Review. Closing the complete annotation session resets the next session back to Auto Send.
+
 If no requested target can be found or focused, Annota falls back to the manual-paste flow and keeps the local PNG/TXT/JSON payload. macOS target routing must be acceptance-tested on the release Mac before publication; clipboard/manual-paste fallback remains the safe path when a target cannot be focused.
+
+## Review requirement
+Review is a mandatory confirmation gate before payload insertion. It contains:
+- complete annotated screenshot preview
+- every numbered marker
+- every matching user comment
+- `+ New Annotation`
+- `Cancel`
+- destination-aware `Auto Send` / `Send to ...` control
+
+No note-card or toolbar action inserts content directly into Codex/ChatGPT.
 
 ## Payload metadata
 The JSON payload includes:
@@ -103,13 +124,10 @@ build.bat
 Output:
 `dist\Annota\Annota.exe`
 
-Package the Windows x64 release:
+Package the current release when its versioned release script is ready:
 ```bat
 release_windows.bat
 ```
-
-Release output:
-`releases\v0.2.0\Annota-v0.2.0-Windows-x64.zip`
 
 Portable one-file build:
 ```bat
@@ -137,9 +155,10 @@ A production macOS release must be built and acceptance-tested on the actual Mac
 ## Privacy
 Screen capture happens only after explicit annotation activation. No capture is uploaded by Annota itself. Temporary payloads use the operating system temporary directory under an `Annota` folder.
 
-## Release status
-- Windows x64 v0.2.0: packaged locally and validated with the permanent automated suite.
-- macOS v0.2.0: build/release tooling and build kit are ready; native `.app`/`.dmg` publication remains gated on a real-macOS build and acceptance test.
+## Version status
+- `v0.2.0`: packaged Windows baseline and initial macOS build-kit baseline.
+- `v0.2.1` development: new comment-card action flow, **+ New Annotation**, mandatory Review before insertion, destination-aware **Auto Send**, and route-label persistence/reset behavior.
+- macOS `v0.2.1` release remains gated on native Mac build and acceptance testing.
 
 ## License
 MIT. See `LICENSE`.

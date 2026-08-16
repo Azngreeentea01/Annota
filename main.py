@@ -57,7 +57,7 @@ except ImportError:  # pragma: no cover
 
 APP_NAME = "Annota"
 ORG_NAME = "SoftWify"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 LAVENDER = "#B9A7FF"
 LAVENDER_DARK = "#8E68F4"
 LAVENDER_SOFT = "#EEE9FF"
@@ -181,13 +181,14 @@ class StatusToast(QFrame):
 
 
 class NoteCard(QFrame):
-    saveRequested = Signal(str)
+    newAnnotationRequested = Signal(str)
+    reviewRequested = Signal(str)
     cancelRequested = Signal()
 
     def __init__(self, number: int, parent=None):
         super().__init__(parent)
         self.setObjectName("noteCard")
-        self.setFixedWidth(300)
+        self.setFixedWidth(430)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
@@ -202,31 +203,53 @@ class NoteCard(QFrame):
         title_row.addWidget(title)
         title_row.addStretch(1)
         layout.addLayout(title_row)
+
         self.editor = SubmitTextEdit()
         self.editor.setPlaceholderText("Describe the change...")
         self.editor.setFixedHeight(96)
-        self.editor.submitted.connect(self._save)
+        self.editor.submitted.connect(self._new_annotation)
         layout.addWidget(self.editor)
-        hint = QLabel("Drag the selection to move it. Drag a corner to resize.\nEnter saves; Shift+Enter adds a new line.")
+
+        hint = QLabel(
+            "Drag the selection to move it. Drag a corner to resize.\n"
+            "Enter starts a new annotation; Shift+Enter adds a new line."
+        )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
         row = QHBoxLayout()
+        row.setSpacing(8)
         cancel = QPushButton("Cancel")
         cancel.setObjectName("secondaryButton")
-        save = QPushButton("Save note")
-        save.setObjectName("primaryButton")
+        new_annotation = QPushButton("+ New Annotation")
+        new_annotation.setObjectName("secondaryButton")
+        auto_send = QPushButton("Auto Send")
+        auto_send.setObjectName("sendButton")
+        if SEND_ICON_PATH.exists():
+            auto_send.setIcon(QIcon(str(SEND_ICON_PATH)))
         cancel.clicked.connect(self.cancelRequested)
-        save.clicked.connect(self._save)
-        row.addStretch(1)
+        new_annotation.clicked.connect(self._new_annotation)
+        auto_send.clicked.connect(self._review)
         row.addWidget(cancel)
-        row.addWidget(save)
+        row.addStretch(1)
+        row.addWidget(new_annotation)
+        row.addWidget(auto_send)
         layout.addLayout(row)
+        _add_send_route_menu(self, auto_send)
 
-    def _save(self):
-        text = self.editor.toPlainText().strip()
+    def _note_text(self) -> str:
+        return self.editor.toPlainText().strip()
+
+    def _new_annotation(self):
+        text = self._note_text()
         if text:
-            self.saveRequested.emit(text)
+            self.newAnnotationRequested.emit(text)
+
+    def _review(self):
+        text = self._note_text()
+        if text:
+            self.reviewRequested.emit(text)
 
 
 class ReviewCard(QFrame):
@@ -242,13 +265,16 @@ class ReviewCard(QFrame):
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(14)
+
         head = QHBoxLayout()
         title_stack = QVBoxLayout()
         title_stack.setSpacing(2)
         title = QLabel("Review your annotations")
         title.setObjectName("reviewTitle")
         count = len(annotations)
-        subtitle = QLabel(f"{count} change{'s' if count != 1 else ''} ready to insert into the current chat")
+        subtitle = QLabel(
+            f"{count} change{'s' if count != 1 else ''} ready. Review the screenshot and comments before sending."
+        )
         subtitle.setObjectName("muted")
         title_stack.addWidget(title)
         title_stack.addWidget(subtitle)
@@ -260,6 +286,7 @@ class ReviewCard(QFrame):
         head.addStretch(1)
         head.addWidget(close)
         root.addLayout(head)
+
         body = QHBoxLayout()
         body.setSpacing(16)
         preview_card = QFrame()
@@ -272,12 +299,13 @@ class ReviewCard(QFrame):
         preview_label.setPixmap(preview.scaled(620, 390, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         preview_layout.addWidget(preview_label)
         body.addWidget(preview_card, 3)
+
         notes_card = QFrame()
         notes_card.setObjectName("notesCard")
         notes_layout = QVBoxLayout(notes_card)
         notes_layout.setContentsMargins(12, 12, 12, 12)
         notes_layout.setSpacing(8)
-        notes_title = QLabel("Notes")
+        notes_title = QLabel("Your comments")
         notes_title.setObjectName("sectionTitle")
         notes_layout.addWidget(notes_title)
         self.list = QListWidget()
@@ -292,25 +320,30 @@ class ReviewCard(QFrame):
         notes_layout.addWidget(self.list, 1)
         body.addWidget(notes_card, 2)
         root.addLayout(body, 1)
+
         footer = QHBoxLayout()
-        add = QPushButton("+ Add another")
-        add.setObjectName("secondaryButton")
+        new_annotation = QPushButton("+ New Annotation")
+        new_annotation.setObjectName("secondaryButton")
         cancel = QPushButton("Cancel")
         cancel.setObjectName("secondaryButton")
-        send = QPushButton("Send to Codex")
+        send = QPushButton(_send_button_label(_PENDING_SEND_ROUTE))
         send.setObjectName("sendButton")
         if SEND_ICON_PATH.exists():
             send.setIcon(QIcon(str(SEND_ICON_PATH)))
         send.setMinimumHeight(42)
-        add.clicked.connect(self.addRequested)
+        new_annotation.clicked.connect(self.addRequested)
         cancel.clicked.connect(self.closeRequested)
-        send.clicked.connect(self.sendRequested)
-        footer.addWidget(add)
+        send.clicked.connect(self._request_send)
+        footer.addWidget(new_annotation)
         footer.addStretch(1)
         footer.addWidget(cancel)
         footer.addWidget(send)
         root.addLayout(footer)
-        _add_send_route_menu(self)
+        _add_send_route_menu(self, send)
+
+    def _request_send(self):
+        _apply_pending_send_route()
+        self.sendRequested.emit()
 
 
 class AnnotationOverlay(QWidget):
@@ -349,9 +382,9 @@ class AnnotationOverlay(QWidget):
         tl = QHBoxLayout(self.toolbar)
         tl.setContentsMargins(10, 8, 10, 8)
         tl.setSpacing(8)
-        self.add_btn = QPushButton("+ Add another")
+        self.add_btn = QPushButton("+ New Annotation")
         self.review_btn = QPushButton("Review")
-        self.send_btn = QPushButton("Send")
+        self.send_btn = QPushButton("Auto Send")
         self.cancel_btn = QPushButton("Cancel")
         self.add_btn.setObjectName("toolbarButton")
         self.review_btn.setObjectName("toolbarButton")
@@ -368,12 +401,16 @@ class AnnotationOverlay(QWidget):
         self.toolbar.adjustSize()
         self.toolbar.hide()
         self.setStyleSheet(APP_STYLE)
-        _add_send_route_menu(self)
+        _add_send_route_menu(self, self.send_btn)
 
     def showEvent(self, event):
         super().showEvent(event)
         self.raise_()
         self.activateWindow()
+
+    def closeEvent(self, event):
+        _clear_pending_send_route()
+        super().closeEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -394,8 +431,8 @@ class AnnotationOverlay(QWidget):
                 self.close()
             return
         if event.modifiers() & Qt.ControlModifier and event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            if self.annotations:
-                self._send()
+            if self.annotations and not self.note_card:
+                self._show_review()
             return
         super().keyPressEvent(event)
 
@@ -562,7 +599,8 @@ class AnnotationOverlay(QWidget):
         if not self.pending_rect:
             return
         self.note_card = NoteCard(len(self.annotations) + 1, self)
-        self.note_card.saveRequested.connect(self._save_note)
+        self.note_card.newAnnotationRequested.connect(self._save_and_new)
+        self.note_card.reviewRequested.connect(self._save_and_review)
         self.note_card.cancelRequested.connect(self._cancel_note)
         self.note_card.adjustSize()
         self._position_note_card()
@@ -582,21 +620,47 @@ class AnnotationOverlay(QWidget):
         self.note_card.move(x, y)
         self.note_card.raise_()
 
-    def _save_note(self, note: str):
+    def _commit_pending_note(self, note: str) -> bool:
         if not self.pending_rect:
-            return
+            return False
         rect = self.pending_rect
-        self.annotations.append(Annotation(len(self.annotations) + 1, (rect.x(), rect.y(), rect.width(), rect.height()), note))
+        self.annotations.append(
+            Annotation(
+                len(self.annotations) + 1,
+                (rect.x(), rect.y(), rect.width(), rect.height()),
+                note,
+            )
+        )
         if self.note_card:
             self.note_card.close()
             self.note_card = None
         self.pending_rect = None
-        self.mode = "select"
         self.interaction = None
+        self.update()
+        return True
+
+    def _save_note(self, note: str):
+        if not self._commit_pending_note(note):
+            return
+        self.mode = "select"
         self.setCursor(Qt.CrossCursor)
+        _set_pending_send_route(_PENDING_SEND_ROUTE, self.send_btn)
         self._position_toolbar()
         self.toolbar.show()
+
+    def _save_and_new(self, note: str):
+        if not self._commit_pending_note(note):
+            return
+        self.mode = "select"
+        self.setCursor(Qt.CrossCursor)
+        self.toolbar.hide()
         self.update()
+
+    def _save_and_review(self, note: str):
+        if not self._commit_pending_note(note):
+            return
+        self.toolbar.hide()
+        self._show_review()
 
     def _cancel_note(self):
         if self.note_card:
@@ -606,6 +670,12 @@ class AnnotationOverlay(QWidget):
         self.mode = "select"
         self.interaction = None
         self.setCursor(Qt.CrossCursor)
+        if self.annotations:
+            _set_pending_send_route(_PENDING_SEND_ROUTE, self.send_btn)
+            self._position_toolbar()
+            self.toolbar.show()
+        else:
+            self.toolbar.hide()
         self.update()
 
     def _position_toolbar(self):
@@ -613,13 +683,13 @@ class AnnotationOverlay(QWidget):
         self.toolbar.move(max(20, (self.width() - self.toolbar.width()) // 2), self.height() - self.toolbar.height() - 24)
 
     def _start_another(self):
-        _clear_pending_send_route()
         if self.review_card:
             self.review_card.close()
             self.review_card = None
         self.mode = "select"
         self.setCursor(Qt.CrossCursor)
-        self.toolbar.show()
+        self.toolbar.hide()
+        self.update()
 
     def _make_review_preview(self) -> QPixmap:
         preview = self.snapshot.copy()
@@ -669,17 +739,25 @@ class AnnotationOverlay(QWidget):
         self.review_card.move(x, y)
 
     def _close_review(self):
-        _clear_pending_send_route()
         if self.review_card:
-            self.review_card.close(); self.review_card = None
+            self.review_card.close()
+            self.review_card = None
         self.mode = "select"
         self.setCursor(Qt.CrossCursor)
+        if self.annotations:
+            _set_pending_send_route(_PENDING_SEND_ROUTE, self.send_btn)
+            self._position_toolbar()
+            self.toolbar.show()
 
     def _send(self):
         if not self.annotations:
             return
+        if not self.review_card or not self.review_card.isVisible():
+            self._show_review()
+            return
         path, message, meta_path = self._build_payload()
         self.finishedCapture.emit(path, message, meta_path)
+        _clear_pending_send_route()
         self.close()
 
     def _build_payload(self) -> tuple[str, str, str]:
@@ -1102,40 +1180,94 @@ def _find_layout_containing(layout,widget):
     return None
 
 
+def _send_button_label(route: Optional[str] = None) -> str:
+    labels = {
+        None: "Auto Send",
+        "auto": "Auto Send",
+        "codex": "Send to Codex",
+        "chatgpt_desktop": "Send to ChatGPT",
+        "chatgpt_web": "Send to ChatGPT Web",
+        "clipboard": "Copy for Manual Paste",
+    }
+    return labels.get(route, "Auto Send")
+
+
 def _apply_pending_send_route(*_args):
     global _SEND_ROUTE_OVERRIDE
-    _SEND_ROUTE_OVERRIDE=_PENDING_SEND_ROUTE
+    _SEND_ROUTE_OVERRIDE = _PENDING_SEND_ROUTE
 
 
 def _clear_pending_send_route(*_args):
-    global _SEND_ROUTE_OVERRIDE,_PENDING_SEND_ROUTE
-    _SEND_ROUTE_OVERRIDE=None; _PENDING_SEND_ROUTE=None
+    global _SEND_ROUTE_OVERRIDE, _PENDING_SEND_ROUTE
+    _SEND_ROUTE_OVERRIDE = None
+    _PENDING_SEND_ROUTE = None
 
 
-def _send_with_override(button: QPushButton,route: str):
+def _set_pending_send_route(route: Optional[str], send_button: QPushButton):
     global _PENDING_SEND_ROUTE
-    _PENDING_SEND_ROUTE=route; button.click()
+    _PENDING_SEND_ROUTE = None if route in (None, "auto") else route
+    send_button.setText(_send_button_label(_PENDING_SEND_ROUTE))
+    if _PENDING_SEND_ROUTE is None:
+        send_button.setToolTip("Auto Send: Codex first, then ChatGPT desktop, ChatGPT web, then clipboard fallback")
+    else:
+        send_button.setToolTip(f"Use {_send_button_label(_PENDING_SEND_ROUTE)} after Review")
 
 
-def _add_send_route_menu(root):
-    if root.property("annotaRouteMenuAdded"): return
-    buttons=root.findChildren(QPushButton); send_button=next((b for b in buttons if b.text().strip() in {"Send","Send to Codex"}),None)
-    if send_button is None: return
-    send_button.setText("Send"); send_button.setToolTip("Send automatically: Codex, then ChatGPT desktop, then ChatGPT web")
-    if isinstance(root,ReviewCard):
-        send_button.pressed.connect(_apply_pending_send_route); send_button.clicked.connect(_clear_pending_send_route)
-        for exit_button in buttons:
-            if exit_button is not send_button and exit_button.text().strip() in {"Cancel","+ Add another","x"}: exit_button.clicked.connect(_clear_pending_send_route)
-        root.destroyed.connect(_clear_pending_send_route)
-    parent=send_button.parentWidget(); layout=_find_layout_containing(parent.layout() if parent else None,send_button)
-    if layout is None: layout=_find_layout_containing(root.layout(),send_button)
-    if layout is None: return
-    route_button=QToolButton(parent or root); route_button.setObjectName("sendRouteButton"); route_button.setText(chr(0x25BE)); route_button.setToolTip("Choose where this annotation is sent"); route_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-    menu=QMenu(route_button)
-    for label,route in (("Send to Codex","codex"),("Send to ChatGPT desktop","chatgpt_desktop"),("Send to ChatGPT web","chatgpt_web")):
-        action=menu.addAction(label); action.triggered.connect(lambda _checked=False,r=route,b=send_button:_send_with_override(b,r))
-    menu.addSeparator(); copy_action=menu.addAction("Copy for manual paste"); copy_action.triggered.connect(lambda _checked=False,b=send_button:_send_with_override(b,"clipboard")); route_button.setMenu(menu)
-    layout.insertWidget(layout.indexOf(send_button)+1,route_button); root.setProperty("annotaRouteMenuAdded",True); root._annota_route_button=route_button
+def _add_send_route_menu(root, send_button: Optional[QPushButton] = None):
+    if root.property("annotaRouteMenuAdded"):
+        return
+    if send_button is None:
+        buttons = root.findChildren(QPushButton)
+        send_button = next(
+            (
+                button
+                for button in buttons
+                if button.objectName() in {"sendButton", "toolbarPrimary"}
+                or button.text().strip() in {"Auto Send", "Send", "Send to Codex"}
+            ),
+            None,
+        )
+    if send_button is None:
+        return
+
+    _set_pending_send_route(_PENDING_SEND_ROUTE, send_button)
+    parent = send_button.parentWidget()
+    layout = _find_layout_containing(parent.layout() if parent else None, send_button)
+    if layout is None:
+        layout = _find_layout_containing(root.layout(), send_button)
+    if layout is None:
+        return
+
+    route_button = QToolButton(parent or root)
+    route_button.setObjectName("sendRouteButton")
+    route_button.setText(chr(0x25BE))
+    route_button.setToolTip("Choose Auto Send or a specific destination")
+    route_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+    menu = QMenu(route_button)
+
+    auto_action = menu.addAction("Auto Send (Recommended)")
+    auto_action.triggered.connect(
+        lambda _checked=False, b=send_button: _set_pending_send_route(None, b)
+    )
+    menu.addSeparator()
+    for label, route in (
+        ("Send to Codex", "codex"),
+        ("Send to ChatGPT desktop", "chatgpt_desktop"),
+        ("Send to ChatGPT web", "chatgpt_web"),
+    ):
+        action = menu.addAction(label)
+        action.triggered.connect(
+            lambda _checked=False, r=route, b=send_button: _set_pending_send_route(r, b)
+        )
+    menu.addSeparator()
+    copy_action = menu.addAction("Copy for manual paste")
+    copy_action.triggered.connect(
+        lambda _checked=False, b=send_button: _set_pending_send_route("clipboard", b)
+    )
+    route_button.setMenu(menu)
+    layout.insertWidget(layout.indexOf(send_button) + 1, route_button)
+    root.setProperty("annotaRouteMenuAdded", True)
+    root._annota_route_button = route_button
 
 
 def main() -> int:
