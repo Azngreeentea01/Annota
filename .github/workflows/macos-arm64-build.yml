@@ -24,6 +24,7 @@ concurrency:
 
 env:
   ANNOTA_VERSION: "0.2.1"
+  VENV: ".venv-macos"
 
 jobs:
   build-macos-arm64:
@@ -40,54 +41,100 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Show macOS runner environment
+      - name: Verify Apple Silicon runner
         run: |
+          set -euxo pipefail
           sw_vers
-          uname -m
+          test "$(uname -m)" = "arm64"
           python3 --version
           gh --version
 
+      - name: Create macOS virtual environment
+        run: |
+          set -euxo pipefail
+          python3 -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --upgrade pip
+
+      - name: Install Annota dependencies
+        run: |
+          set -euxo pipefail
+          "$VENV/bin/python" -m pip install -r requirements.txt
+
+      - name: Generate native icon resources
+        run: |
+          set -euxo pipefail
+          "$VENV/bin/python" tools/make_icons.py
+          test -d assets/Annota.iconset
+          iconutil -c icns assets/Annota.iconset -o assets/annota.icns
+          test -f assets/annota.icns
+
+      - name: Compile and test source
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euxo pipefail
+          "$VENV/bin/python" -m compileall -q main.py tests tools
+          "$VENV/bin/python" -m pytest -q
+
       - name: Build native Annota.app
         run: |
-          chmod +x build_macos.sh release_macos.sh
-          ./build_macos.sh
+          set -euxo pipefail
+          rm -rf build dist
+          "$VENV/bin/python" -m PyInstaller \
+            --noconfirm \
+            --clean \
+            --windowed \
+            --onedir \
+            --name Annota \
+            --osx-bundle-identifier net.softwify.annota \
+            --icon assets/annota.icns \
+            --add-data "assets:assets" \
+            main.py
+          test -d dist/Annota.app
+
+      - name: Sign and verify app
+        run: |
+          set -euxo pipefail
+          codesign --force --deep --sign - dist/Annota.app
+          codesign --verify --deep --strict --verbose=2 dist/Annota.app
+          BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' dist/Annota.app/Contents/Info.plist)"
+          test "$BUNDLE_ID" = "net.softwify.annota"
 
       - name: Package macOS DMG
-        env:
-          ANNOTA_SKIP_BUILD: "1"
-        run: ./release_macos.sh
-
-      - name: Verify app and DMG
-        shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           ARCH="$(uname -m)"
-          test "$ARCH" = "arm64"
-          APP="dist/Annota.app"
-          DMG="releases/v${ANNOTA_VERSION}/Annota-v${ANNOTA_VERSION}-macOS-${ARCH}.dmg"
-          SHA="${DMG}.sha256"
-          test -d "$APP"
+          RELEASE_DIR="releases/v${ANNOTA_VERSION}"
+          STAGE="$RELEASE_DIR/Annota-v${ANNOTA_VERSION}-macOS-${ARCH}"
+          DMG="$RELEASE_DIR/Annota-v${ANNOTA_VERSION}-macOS-${ARCH}.dmg"
+          SHA="$DMG.sha256"
+          rm -rf "$STAGE" "$DMG" "$SHA"
+          mkdir -p "$STAGE"
+          cp -R dist/Annota.app "$STAGE/Annota.app"
+          cp README.md "$STAGE/README.md"
+          cp LICENSE "$STAGE/LICENSE"
+          hdiutil create -volname "Annota v${ANNOTA_VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+          shasum -a 256 "$DMG" | awk '{print toupper($1) "  " $2}' > "$SHA"
+          rm -rf "$STAGE"
           test -f "$DMG"
           test -f "$SHA"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
-          test "$BUNDLE_ID" = "net.softwify.annota"
-          echo "Bundle identifier: $BUNDLE_ID"
-          echo "DMG: $DMG"
           cat "$SHA"
 
-      - name: Publish macOS build as GitHub prerelease
-        shell: bash
+      - name: Upload macOS assets to draft v0.2.1 release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           ARCH="$(uname -m)"
+          TAG="v${ANNOTA_VERSION}"
           DMG="releases/v${ANNOTA_VERSION}/Annota-v${ANNOTA_VERSION}-macOS-${ARCH}.dmg"
-          SHA="${DMG}.sha256"
-          TAG="v${ANNOTA_VERSION}-macos-rc.${GITHUB_RUN_NUMBER}"
-          gh release create "$TAG" "$DMG" "$SHA" \
-            --target "$GITHUB_SHA" \
-            --title "Annota v${ANNOTA_VERSION} macOS ARM64 RC ${GITHUB_RUN_NUMBER}" \
-            --prerelease \
-            --notes "GitHub-hosted Apple Silicon build of Annota v${ANNOTA_VERSION}. Automated tests, PyInstaller packaging, ad-hoc code-sign verification, bundle-ID verification, DMG creation, and SHA-256 generation passed on macOS ARM64. This is a release candidate and still requires real-Mac acceptance testing for Screen Recording, Accessibility, Option+Q, menu-bar behavior, Retina/multi-display behavior, and real Codex/ChatGPT insertion before production release."
+          SHA="$DMG.sha256"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$DMG" "$SHA" --clobber
+          else
+            gh release create "$TAG" "$DMG" "$SHA" \
+              --target "$GITHUB_SHA" \
+              --title "Annota v${ANNOTA_VERSION}" \
+              --draft \
+              --notes "Annota v${ANNOTA_VERSION} for Windows x64 and macOS ARM64. This draft is created by the native macOS build and remains unpublished until the Windows package is attached. macOS is ad-hoc signed and not notarized; real-Mac acceptance is still recommended for Screen Recording, Accessibility, Option+Q, Retina/multi-display behavior, and target insertion."
+          fi
