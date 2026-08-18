@@ -16,16 +16,7 @@ SUPPORTED_TARGETS = (
 TARGET_ORDER = tuple(route for route, _label in SUPPORTED_TARGETS)
 TARGET_LABELS = dict(SUPPORTED_TARGETS)
 
-_BROWSER_EXECUTABLES = {
-    "arc.exe",
-    "brave.exe",
-    "chrome.exe",
-    "firefox.exe",
-    "msedge.exe",
-    "opera.exe",
-    "opera_gx.exe",
-    "vivaldi.exe",
-}
+_BROWSER_EXECUTABLES = {"arc.exe", "brave.exe", "chrome.exe", "firefox.exe", "msedge.exe", "opera.exe", "opera_gx.exe", "vivaldi.exe"}
 
 _WINDOWS_EXECUTABLES = {
     "codex": {"codex.exe", "codex-app.exe"},
@@ -48,37 +39,35 @@ _MAC_TOKENS = {
 }
 
 
+def is_auto_route(route: str | None) -> bool:
+    return route in (None, "auto")
+
+
 def target_label(route: str | None) -> str:
-    if route in (None, "auto"):
+    if is_auto_route(route):
         return "Auto Send"
     if route == "clipboard":
         return "Copy for Manual Paste"
-    label = TARGET_LABELS.get(route)
-    return f"Send to {label}" if label else "Auto Send"
+    return "Send"
+
+
+def target_description(route: str | None) -> str:
+    if is_auto_route(route):
+        return "Automatically send to the app active when annotation started."
+    if route == "clipboard":
+        return "Copy annotation for manual paste."
+    return f"Send only to {TARGET_LABELS.get(route, route)}."
 
 
 def classify_windows_target(title: str, executable: str = "") -> str | None:
-    """Classify a visible Windows app without treating browser tabs as targets."""
     title_l = (title or "").strip().lower()
-    executable_l = (executable or "").strip().lower().replace("\\", "/")
-    exe_name = executable_l.rsplit("/", 1)[-1]
+    exe_name = (executable or "").strip().lower().replace("\\", "/").rsplit("/", 1)[-1]
     if exe_name in _BROWSER_EXECUTABLES:
         return None
     for route in TARGET_ORDER:
         if exe_name in _WINDOWS_EXECUTABLES[route]:
             return route
-
-    # Conservative title fallbacks help when Windows blocks process-path lookup.
-    title_tokens = (
-        ("codex", "codex"),
-        ("chatgpt", "chatgpt"),
-        ("claude", "claude"),
-        ("cursor", "cursor"),
-        ("vscode", "visual studio code"),
-        ("windsurf", "windsurf"),
-        ("opencode", "opencode"),
-    )
-    for route, token in title_tokens:
+    for token, route in (("codex", "codex"), ("chatgpt", "chatgpt"), ("claude", "claude"), ("cursor", "cursor"), ("vscode", "vscode"), ("visual studio code", "vscode"), ("windsurf", "windsurf"), ("opencode", "opencode")):
         if token in title_l:
             return route
     return None
@@ -86,37 +75,28 @@ def classify_windows_target(title: str, executable: str = "") -> str | None:
 
 def classify_macos_target(target: dict) -> str | None:
     value = f"{target.get('name', '')} {target.get('bundle_id', '')}".lower()
-    for route in TARGET_ORDER:
-        if any(token in value for token in _MAC_TOKENS[route]):
+    for route, tokens in _MAC_TOKENS.items():
+        if any(token in value for token in tokens):
             return route
     return None
 
 
 def _same_target(left: dict, right: dict) -> bool:
-    for key in ("hwnd", "pid"):
-        a = left.get(key)
-        b = right.get(key)
-        if a and b and a == b:
-            return True
-    return False
+    return any(left.get(key) and left.get(key) == right.get(key) for key in ("hwnd", "pid"))
 
 
-def choose_target_record(
-    targets: Iterable[dict], route: str | None = None, source_target: dict | None = None
-) -> dict | None:
-    """Prefer the supported app active when capture began, then stable app priority."""
+def choose_target_record(targets: Iterable[dict], route: str | None = None, source_target: dict | None = None) -> dict | None:
+    """Choose a destination. Manual selections are locked; auto uses capture source first."""
     if route == "clipboard":
         return None
-    candidates = [dict(target) for target in targets if target.get("route") in TARGET_ORDER]
-    wanted = TARGET_ORDER if route in (None, "auto") else (route,)
+    candidates = [dict(item) for item in targets if item.get("route") in TARGET_ORDER]
+    if not is_auto_route(route):
+        return next((item for item in candidates if item.get("route") == route), None)
     source = dict(source_target or {})
-    source_route = source.get("route")
-    if source_route in wanted:
-        for candidate in candidates:
-            if candidate.get("route") == source_route and _same_target(candidate, source):
-                return candidate
-    for wanted_route in wanted:
-        for candidate in candidates:
-            if candidate.get("route") == wanted_route:
-                return candidate
+    for item in candidates:
+        if item.get("route") == source.get("route") and _same_target(item, source):
+            return item
+    for wanted in TARGET_ORDER:
+        if match := next((item for item in candidates if item.get("route") == wanted), None):
+            return match
     return None
