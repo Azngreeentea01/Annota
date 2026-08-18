@@ -10,9 +10,10 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+from contextlib import suppress
 from pathlib import Path
 
-from PySide6.QtWidgets import QMenu, QSizePolicy, QToolButton
+from PySide6.QtWidgets import QCheckBox, QDialog, QMenu, QSizePolicy, QToolButton
 
 import annota_core as core
 from target_routing import (
@@ -27,7 +28,10 @@ from target_routing import (
 _ORIGINAL_PASTE_SHORTCUT = core.paste_shortcut
 _ORIGINAL_SEND_TO_CURRENT_CHAT = core.AnnotaApp._send_to_current_chat
 _ORIGINAL_OVERLAY_INIT = core.AnnotationOverlay.__init__
+_ORIGINAL_SETTINGS_INIT = core.SettingsDialog.__init__
+_ORIGINAL_SETTINGS_SAVE = core.SettingsDialog._save
 _SEND_SESSION = {"active": False, "paste_count": 0, "controller": None}
+SKIP_MULTI_REVIEW_KEY = "behavior/skip_review_multiple"
 
 
 def _windows_frontmost_target() -> dict:
@@ -249,10 +253,16 @@ def _send_to_current_chat_with_auto_submit(self, image_path: str, message: str):
     core.QTimer.singleShot(10000, lambda: _SEND_SESSION.update(active=False))
 
 
+def _skip_multi_review_enabled(overlay) -> bool:
+    settings = getattr(overlay, "settings", None)
+    if settings is None:
+        return False
+    return settings.value(SKIP_MULTI_REVIEW_KEY, False, type=bool)
+
+
 def _send_overlay_without_review(overlay) -> None:
-    """Finish a one-annotation Auto Send without opening the Review card."""
-    if len(overlay.annotations) != 1:
-        overlay._show_review()
+    """Build and emit the current annotation payload without opening Review."""
+    if not overlay.annotations:
         return
     core._apply_pending_send_route()
     path, message, meta_path = overlay._build_payload()
@@ -260,7 +270,7 @@ def _send_overlay_without_review(overlay) -> None:
         "payload_ready",
         image=path,
         metadata=meta_path,
-        annotation_count=1,
+        annotation_count=len(overlay.annotations),
         review_skipped=True,
     )
     overlay.finishedCapture.emit(path, message, meta_path)
@@ -269,10 +279,13 @@ def _send_overlay_without_review(overlay) -> None:
 
 
 def _auto_send_or_review(overlay) -> None:
-    """Skip Review only for a single annotation; review multi-annotation sends."""
-    if len(overlay.annotations) == 1:
+    """Direct-send one annotation, or multiple when the user opts to skip Review."""
+    count = len(overlay.annotations)
+    if count == 0:
+        return
+    if count == 1 or _skip_multi_review_enabled(overlay):
         _send_overlay_without_review(overlay)
-    elif len(overlay.annotations) > 1:
+    else:
         overlay._show_review()
 
 
@@ -286,10 +299,39 @@ def _save_and_auto_send(self, note: str) -> None:
 def _overlay_init_with_direct_auto_send(self, settings) -> None:
     _ORIGINAL_OVERLAY_INIT(self, settings)
     # Review remains an explicit preview action. Auto Send follows the
-    # one-annotation fast path and only previews when multiple annotations exist.
+    # configured fast path; the Review button is never bypassed.
     with suppress(Exception):
         self.send_btn.clicked.disconnect()
     self.send_btn.clicked.connect(lambda: _auto_send_or_review(self))
+
+
+def _settings_init_with_multi_review_option(self, settings, parent=None) -> None:
+    _ORIGINAL_SETTINGS_INIT(self, settings, parent)
+    self.skip_review_multiple = QCheckBox(
+        "Skip Review and Auto Send when multiple annotations are ready"
+    )
+    self.skip_review_multiple.setObjectName("skipReviewMultiple")
+    self.skip_review_multiple.setChecked(
+        settings.value(SKIP_MULTI_REVIEW_KEY, False, type=bool)
+    )
+    self.skip_review_multiple.setToolTip(
+        "When enabled, Auto Send immediately sends two or more annotations without opening Review. The Review button still opens Review manually."
+    )
+    behavior_parent = self.start_login.parentWidget()
+    if behavior_parent is not None and behavior_parent.layout() is not None:
+        layout = behavior_parent.layout()
+        clear_index = layout.indexOf(self.clear_after)
+        insert_at = clear_index + 1 if clear_index >= 0 else layout.count()
+        layout.insertWidget(insert_at, self.skip_review_multiple)
+
+
+def _settings_save_with_multi_review_option(self) -> None:
+    _ORIGINAL_SETTINGS_SAVE(self)
+    if self.result() == QDialog.DialogCode.Accepted:
+        self.settings.setValue(
+            SKIP_MULTI_REVIEW_KEY,
+            self.skip_review_multiple.isChecked(),
+        )
 
 
 def _install_routing_extension() -> None:
@@ -306,14 +348,14 @@ def _install_routing_extension() -> None:
     core._add_send_route_menu = _add_send_route_menu
     core._annota_submit_shortcut = _submit_shortcut
     core._annota_auto_send_or_review = _auto_send_or_review
+    core._annota_skip_multi_review_key = SKIP_MULTI_REVIEW_KEY
     core.paste_shortcut = _paste_shortcut_with_auto_submit
     core.AnnotaApp._send_to_current_chat = _send_to_current_chat_with_auto_submit
     core.AnnotationOverlay.__init__ = _overlay_init_with_direct_auto_send
     core.AnnotationOverlay._save_and_review = _save_and_auto_send
+    core.SettingsDialog.__init__ = _settings_init_with_multi_review_option
+    core.SettingsDialog._save = _settings_save_with_multi_review_option
 
-
-# ``suppress`` is imported late above only for the signal reconnect wrapper.
-from contextlib import suppress
 
 _install_routing_extension()
 
