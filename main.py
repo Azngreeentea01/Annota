@@ -10,6 +10,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 from PySide6.QtWidgets import QMenu, QSizePolicy, QToolButton
@@ -23,6 +24,10 @@ from target_routing import (
     classify_windows_target,
     target_label,
 )
+
+_ORIGINAL_PASTE_SHORTCUT = core.paste_shortcut
+_ORIGINAL_SEND_TO_CURRENT_CHAT = core.AnnotaApp._send_to_current_chat
+_SEND_SESSION = {"active": False, "paste_count": 0, "controller": None}
 
 
 def _windows_frontmost_target() -> dict:
@@ -178,6 +183,72 @@ def _add_send_route_menu(root, send_button=None):
     root._annota_route_button = route_button
 
 
+def _submit_shortcut() -> tuple[bool, str]:
+    """Submit the populated composer after both payload paste operations succeed."""
+    if core.is_macos():
+        try:
+            import Quartz
+
+            enter_key_code = 36
+            key_down = Quartz.CGEventCreateKeyboardEvent(None, enter_key_code, True)
+            key_up = Quartz.CGEventCreateKeyboardEvent(None, enter_key_code, False)
+            if key_down is None or key_up is None:
+                return False, "macOS could not create a Return key event"
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, key_down)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, key_up)
+            return True, ""
+        except Exception as exc:
+            return False, f"macOS submit event failed: {exc}"
+
+    if core.keyboard is None:
+        return False, "Keyboard backend unavailable"
+    try:
+        controller = core.keyboard.Controller()
+        controller.press(core.keyboard.Key.enter)
+        controller.release(core.keyboard.Key.enter)
+        return True, ""
+    except Exception as exc:
+        return False, f"Submit shortcut failed: {exc}"
+
+
+def _finish_auto_send() -> None:
+    if not _SEND_SESSION["active"] or _SEND_SESSION["paste_count"] < 2:
+        return
+    controller = _SEND_SESSION.get("controller")
+    _SEND_SESSION["active"] = False
+    ok, error = _submit_shortcut()
+    if controller is None:
+        return
+    if ok:
+        controller._show_toast(
+            "Annotation sent",
+            "Annota inserted the screenshot and notes, then submitted them to the selected chat.",
+            4200,
+        )
+    else:
+        controller._show_toast(
+            "Ready, but not submitted",
+            f"The screenshot and notes were inserted, but Annota could not press Send: {error}. Press Enter/Return to send them.",
+            6500,
+        )
+
+
+def _paste_shortcut_with_auto_submit() -> tuple[bool, str]:
+    ok, error = _ORIGINAL_PASTE_SHORTCUT()
+    if ok and _SEND_SESSION["active"]:
+        _SEND_SESSION["paste_count"] += 1
+        if _SEND_SESSION["paste_count"] == 2:
+            core.QTimer.singleShot(220, _finish_auto_send)
+    return ok, error
+
+
+def _send_to_current_chat_with_auto_submit(self, image_path: str, message: str):
+    _SEND_SESSION.update(active=True, paste_count=0, controller=self)
+    _ORIGINAL_SEND_TO_CURRENT_CHAT(self, image_path, message)
+    # A failed/fallback send never reaches two successful paste operations.
+    core.QTimer.singleShot(10000, lambda: _SEND_SESSION.update(active=False))
+
+
 def _install_routing_extension() -> None:
     core._ANNOTA_CAPTURE_SOURCE_TARGET = {}
     core.ROUTE_PRIORITY = TARGET_ORDER
@@ -190,6 +261,9 @@ def _install_routing_extension() -> None:
     core._send_button_label = _send_button_label
     core._set_pending_send_route = _set_pending_send_route
     core._add_send_route_menu = _add_send_route_menu
+    core._annota_submit_shortcut = _submit_shortcut
+    core.paste_shortcut = _paste_shortcut_with_auto_submit
+    core.AnnotaApp._send_to_current_chat = _send_to_current_chat_with_auto_submit
 
 
 _install_routing_extension()
