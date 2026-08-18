@@ -20,7 +20,11 @@ def _button(root, text):
 
 
 def _route_button(root):
-    matches = [button for button in root.findChildren(QToolButton) if button.objectName() == "sendRouteButton"]
+    matches = [
+        button
+        for button in root.findChildren(QToolButton)
+        if button.objectName() == "sendRouteButton"
+    ]
     assert len(matches) == 1
     return matches[0]
 
@@ -99,7 +103,7 @@ def test_dropdown_uses_native_arrow_and_is_vertically_aligned():
     card.close()
 
 
-def test_manual_route_selection_changes_button_without_triggering_review():
+def test_manual_route_selection_switches_button_to_send_without_triggering_review():
     _app()
     card = main.NoteCard(1)
     reviews = []
@@ -110,7 +114,9 @@ def test_manual_route_selection_changes_button_without_triggering_review():
     claude_action = next(action for action in route.menu().actions() if action.text() == "Claude")
     claude_action.trigger()
 
-    assert _button(card, "Send to Claude")
+    send = _button(card, "Send")
+    assert send.toolTip() == "Send only to Claude."
+    assert send.property("annotaSendRoute") == "claude"
     assert main._PENDING_SEND_ROUTE == "claude"
     assert reviews == []
     card.close()
@@ -124,19 +130,24 @@ def test_selected_route_carries_into_review_and_only_review_commits_it():
         action for action in route.menu().actions() if action.text() == "Visual Studio Code"
     )
     vscode_action.trigger()
+    assert _button(note_card, "Send")
     assert main._PENDING_SEND_ROUTE == "vscode"
     assert main._SEND_ROUTE_OVERRIDE is None
 
     preview = QPixmap(640, 360)
     preview.fill()
-    review = main.ReviewCard([main.Annotation(1, (10, 20, 100, 80), "Fix alignment")], preview)
+    review = main.ReviewCard(
+        [main.Annotation(1, (10, 20, 100, 80), "Fix alignment")], preview
+    )
     sent = []
     review.sendRequested.connect(lambda: sent.append(True))
 
-    assert _button(review, "Send to Visual Studio Code")
+    send = _button(review, "Send")
+    assert send.toolTip() == "Send only to Visual Studio Code."
+    assert send.property("annotaSendRoute") == "vscode"
     assert main._SEND_ROUTE_OVERRIDE is None
 
-    _button(review, "Send to Visual Studio Code").click()
+    send.click()
 
     assert sent == [True]
     assert main._SEND_ROUTE_OVERRIDE == "vscode"
@@ -152,14 +163,20 @@ def test_review_can_reset_manual_route_back_to_auto_send():
     route = _route_button(review)
     cursor_action = next(action for action in route.menu().actions() if action.text() == "Cursor")
     cursor_action.trigger()
-    assert _button(review, "Send to Cursor")
+    send = _button(review, "Send")
+    assert send.toolTip() == "Send only to Cursor."
+    assert main._PENDING_SEND_ROUTE == "cursor"
 
     auto_action = next(
-        action for action in route.menu().actions() if action.text() == "Auto Send (Recommended)"
+        action
+        for action in route.menu().actions()
+        if action.text() == "Auto Send (Recommended)"
     )
     auto_action.trigger()
 
-    assert _button(review, "Auto Send")
+    auto_send = _button(review, "Auto Send")
+    assert auto_send.toolTip() == "Automatically send to the app active when annotation started."
+    assert auto_send.property("annotaSendRoute") == "auto"
     assert main._PENDING_SEND_ROUTE is None
     assert main._SEND_ROUTE_OVERRIDE is None
     review.close()
@@ -177,8 +194,12 @@ def test_review_footer_uses_new_annotation_not_add_another():
 
 
 def test_v022_review_gate_and_session_reset_source_contract():
-    core_source = (Path(__file__).resolve().parents[1] / "annota_core.py").read_text(encoding="utf-8")
-    entry_source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+    core_source = (Path(__file__).resolve().parents[1] / "annota_core.py").read_text(
+        encoding="utf-8"
+    )
+    entry_source = (Path(__file__).resolve().parents[1] / "main.py").read_text(
+        encoding="utf-8"
+    )
     assert main.APP_VERSION == "0.2.2"
     assert "def closeEvent(self, event):" in core_source
     assert "_clear_pending_send_route()" in core_source
