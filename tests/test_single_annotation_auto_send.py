@@ -9,12 +9,22 @@ class _FakeSignal:
         self.calls.append(args)
 
 
+class _FakeSettings:
+    def __init__(self, skip_multiple=False):
+        self.skip_multiple = skip_multiple
+
+    def value(self, key, default=None, type=None):
+        value = self.skip_multiple if key == main._annota_skip_multi_review_key else default
+        return type(value) if type is not None else value
+
+
 class _FakeOverlay:
-    def __init__(self, count):
+    def __init__(self, count, skip_multiple=False):
         self.annotations = [object() for _ in range(count)]
         self.finishedCapture = _FakeSignal()
         self.review_calls = 0
         self.closed = False
+        self.settings = _FakeSettings(skip_multiple)
 
     def _show_review(self):
         self.review_calls += 1
@@ -45,8 +55,8 @@ def test_single_annotation_auto_send_skips_review(monkeypatch):
     assert cleared == [True]
 
 
-def test_multiple_annotations_auto_send_opens_review(monkeypatch):
-    overlay = _FakeOverlay(2)
+def test_multiple_annotations_auto_send_opens_review_by_default(monkeypatch):
+    overlay = _FakeOverlay(2, skip_multiple=False)
     monkeypatch.setattr(
         main,
         "_apply_pending_send_route",
@@ -58,6 +68,25 @@ def test_multiple_annotations_auto_send_opens_review(monkeypatch):
     assert overlay.review_calls == 1
     assert overlay.finishedCapture.calls == []
     assert not overlay.closed
+
+
+def test_multiple_annotations_can_skip_review_when_enabled(monkeypatch):
+    overlay = _FakeOverlay(3, skip_multiple=True)
+    applied = []
+    cleared = []
+    monkeypatch.setattr(main, "_apply_pending_send_route", lambda: applied.append(True))
+    monkeypatch.setattr(main, "_clear_pending_send_route", lambda: cleared.append(True))
+    monkeypatch.setattr(main, "_diagnostic_event", lambda *_args, **_kwargs: None)
+
+    main._annota_auto_send_or_review(overlay)
+
+    assert overlay.review_calls == 0
+    assert overlay.finishedCapture.calls == [
+        ("capture.png", "annotation notes", "capture.json")
+    ]
+    assert overlay.closed
+    assert applied == [True]
+    assert cleared == [True]
 
 
 def test_no_annotations_auto_send_does_nothing():
