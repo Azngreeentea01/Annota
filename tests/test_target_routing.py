@@ -3,6 +3,8 @@ from target_routing import (
     choose_target_record,
     classify_macos_target,
     classify_windows_target,
+    target_description,
+    target_label,
 )
 
 
@@ -16,6 +18,27 @@ def test_supported_target_order_is_exact():
         "windsurf",
         "opencode",
     )
+
+
+def test_route_labels_and_descriptions_match_send_mode():
+    assert target_label(None) == "Auto Send"
+    assert target_label("auto") == "Auto Send"
+    assert target_description(None) == "Automatically send to the app active when annotation started."
+
+    for route, label in (
+        ("codex", "Codex"),
+        ("chatgpt", "ChatGPT"),
+        ("claude", "Claude"),
+        ("cursor", "Cursor"),
+        ("vscode", "Visual Studio Code"),
+        ("windsurf", "Windsurf"),
+        ("opencode", "OpenCode"),
+    ):
+        assert target_label(route) == "Send"
+        assert target_description(route) == f"Send only to {label}."
+
+    assert target_label("clipboard") == "Copy for Manual Paste"
+    assert target_description("clipboard") == "Copy annotation for manual paste."
 
 
 def test_windows_classification_supports_all_apps_and_rejects_browser_tabs():
@@ -57,14 +80,21 @@ def test_auto_send_falls_back_to_stable_priority_when_source_is_not_supported():
         {"hwnd": 33, "pid": 333, "route": "claude"},
         {"hwnd": 11, "pid": 111, "route": "codex"},
     ]
-    assert choose_target_record(targets, None, {"hwnd": 99, "pid": 999, "route": None})["route"] == "codex"
+    assert choose_target_record(
+        targets, None, {"hwnd": 99, "pid": 999, "route": None}
+    )["route"] == "codex"
 
 
-def test_manual_route_only_uses_selected_supported_app():
+def test_manual_route_only_uses_selected_supported_app_and_ignores_active_source():
     targets = [
         {"hwnd": 11, "pid": 111, "route": "codex"},
         {"hwnd": 77, "pid": 777, "route": "opencode"},
     ]
-    assert choose_target_record(targets, "opencode", None)["hwnd"] == 77
-    assert choose_target_record(targets, "windsurf", None) is None
-    assert choose_target_record(targets, "clipboard", None) is None
+    active_codex = {"hwnd": 11, "pid": 111, "route": "codex"}
+
+    selected = choose_target_record(targets, "opencode", active_codex)
+
+    assert selected["hwnd"] == 77
+    assert selected["route"] == "opencode"
+    assert choose_target_record(targets, "windsurf", active_codex) is None
+    assert choose_target_record(targets, "clipboard", active_codex) is None
