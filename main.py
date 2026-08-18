@@ -25,6 +25,11 @@ from target_routing import (
     target_description,
     target_label,
 )
+from ui_style import build_app_style
+
+# Keep the existing lavender identity, but layer modern Windows 11/Fluent
+# visual rules on Windows only. macOS and other platforms keep the base theme.
+core.APP_STYLE = build_app_style(core.APP_STYLE)
 
 _ORIGINAL_PASTE_SHORTCUT = core.paste_shortcut
 _ORIGINAL_SEND_TO_CURRENT_CHAT = core.AnnotaApp._send_to_current_chat
