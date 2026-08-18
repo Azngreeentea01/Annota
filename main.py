@@ -22,6 +22,7 @@ from target_routing import (
     choose_target_record,
     classify_macos_target,
     classify_windows_target,
+    target_description,
     target_label,
 )
 
@@ -118,16 +119,13 @@ def _send_button_label(route: str | None = None) -> str:
     return target_label(route)
 
 
-def _set_pending_send_route(route: str | None, send_button):
-    core._PENDING_SEND_ROUTE = None if route in (None, "auto") else route
-    send_button.setText(target_label(core._PENDING_SEND_ROUTE))
-    if core._PENDING_SEND_ROUTE is None:
-        names = ", ".join(label for _route, label in SUPPORTED_TARGETS)
-        send_button.setToolTip(
-            f"Auto Send: return to the supported app active at capture time first; otherwise try {names}; clipboard fallback is always safe."
-        )
-    else:
-        send_button.setToolTip(f"Use {target_label(core._PENDING_SEND_ROUTE)} after Review")
+def _set_pending_send_route(route: str | None, send_button) -> None:
+    """Set the current send mode and refresh one send control from routing state."""
+    selected_route = None if route in (None, "auto") else route
+    core._PENDING_SEND_ROUTE = selected_route
+    send_button.setText(target_label(selected_route))
+    send_button.setToolTip(target_description(selected_route))
+    send_button.setProperty("annotaSendRoute", selected_route or "auto")
 
 
 def _add_send_route_menu(root, send_button=None):
@@ -140,7 +138,7 @@ def _add_send_route_menu(root, send_button=None):
                 button
                 for button in buttons
                 if button.objectName() in {"sendButton", "toolbarPrimary"}
-                or button.text().strip().startswith(("Auto Send", "Send to "))
+                or button.text().strip() in {"Auto Send", "Send", "Copy for Manual Paste"}
             ),
             None,
         )
