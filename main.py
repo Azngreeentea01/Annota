@@ -10,7 +10,6 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
-from contextlib import suppress
 from pathlib import Path
 
 from PySide6.QtWidgets import QMenu, QSizePolicy, QToolButton
@@ -27,6 +26,7 @@ from target_routing import (
 
 _ORIGINAL_PASTE_SHORTCUT = core.paste_shortcut
 _ORIGINAL_SEND_TO_CURRENT_CHAT = core.AnnotaApp._send_to_current_chat
+_ORIGINAL_OVERLAY_INIT = core.AnnotationOverlay.__init__
 _SEND_SESSION = {"active": False, "paste_count": 0, "controller": None}
 
 
@@ -249,6 +249,49 @@ def _send_to_current_chat_with_auto_submit(self, image_path: str, message: str):
     core.QTimer.singleShot(10000, lambda: _SEND_SESSION.update(active=False))
 
 
+def _send_overlay_without_review(overlay) -> None:
+    """Finish a one-annotation Auto Send without opening the Review card."""
+    if len(overlay.annotations) != 1:
+        overlay._show_review()
+        return
+    core._apply_pending_send_route()
+    path, message, meta_path = overlay._build_payload()
+    core._diagnostic_event(
+        "payload_ready",
+        image=path,
+        metadata=meta_path,
+        annotation_count=1,
+        review_skipped=True,
+    )
+    overlay.finishedCapture.emit(path, message, meta_path)
+    core._clear_pending_send_route()
+    overlay.close()
+
+
+def _auto_send_or_review(overlay) -> None:
+    """Skip Review only for a single annotation; review multi-annotation sends."""
+    if len(overlay.annotations) == 1:
+        _send_overlay_without_review(overlay)
+    elif len(overlay.annotations) > 1:
+        overlay._show_review()
+
+
+def _save_and_auto_send(self, note: str) -> None:
+    if not self._commit_pending_note(note):
+        return
+    self.toolbar.hide()
+    _auto_send_or_review(self)
+
+
+def _overlay_init_with_direct_auto_send(self, settings) -> None:
+    _ORIGINAL_OVERLAY_INIT(self, settings)
+    # Review remains an explicit preview action. Auto Send follows the
+    # one-annotation fast path and only previews when multiple annotations exist.
+    with suppress(Exception):
+        self.send_btn.clicked.disconnect()
+    self.send_btn.clicked.connect(lambda: _auto_send_or_review(self))
+
+
 def _install_routing_extension() -> None:
     core._ANNOTA_CAPTURE_SOURCE_TARGET = {}
     core.ROUTE_PRIORITY = TARGET_ORDER
@@ -262,9 +305,15 @@ def _install_routing_extension() -> None:
     core._set_pending_send_route = _set_pending_send_route
     core._add_send_route_menu = _add_send_route_menu
     core._annota_submit_shortcut = _submit_shortcut
+    core._annota_auto_send_or_review = _auto_send_or_review
     core.paste_shortcut = _paste_shortcut_with_auto_submit
     core.AnnotaApp._send_to_current_chat = _send_to_current_chat_with_auto_submit
+    core.AnnotationOverlay.__init__ = _overlay_init_with_direct_auto_send
+    core.AnnotationOverlay._save_and_review = _save_and_auto_send
 
+
+# ``suppress`` is imported late above only for the signal reconnect wrapper.
+from contextlib import suppress
 
 _install_routing_extension()
 
