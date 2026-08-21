@@ -15,21 +15,15 @@ def _app():
 
 def test_macos_app_classification_contract():
     assert main.classify_macos_app({"name": "Codex", "bundle_id": "com.openai.codex"}) == "codex"
-    assert (
-        main.classify_macos_app({"name": "ChatGPT", "bundle_id": "com.openai.chat"})
-        == "chatgpt_desktop"
-    )
-    assert (
-        main.classify_macos_app({"name": "Safari", "bundle_id": "com.apple.Safari"})
-        == "chatgpt_web"
-    )
+    assert main.classify_macos_app({"name": "ChatGPT", "bundle_id": "com.openai.chat"}) == "chatgpt"
+    assert main.classify_macos_app({"name": "Safari", "bundle_id": "com.apple.Safari"}) is None
     assert main.classify_macos_app({"name": "Finder", "bundle_id": "com.apple.finder"}) is None
 
 
-def test_manual_web_route_can_reuse_source_browser(monkeypatch):
+def test_manual_chatgpt_route_does_not_reuse_browser_source(monkeypatch):
     monkeypatch.setattr(main, "is_macos", lambda: True)
     source = {"pid": 44, "name": "Safari", "bundle_id": "com.apple.Safari"}
-    assert main.macos_find_chat_target("chatgpt_web", source) == source
+    assert main.macos_find_chat_target("chatgpt", source) == {}
 
 
 def test_non_macos_permission_status_is_ready():
@@ -119,7 +113,7 @@ def test_native_hotkey_swift_source_contract():
 
 
 def test_macos_runtime_reliability_source_contract():
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    source = (ROOT / "annota_core.py").read_text(encoding="utf-8")
     assert 'APP_VERSION = "0.2.2"' in source
     assert "self.tray_menu = QMenu()" in source
     assert "CGPreflightScreenCaptureAccess" in source

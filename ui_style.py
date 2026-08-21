@@ -199,9 +199,17 @@ QTextEdit:focus, QLineEdit:focus, QSpinBox:focus {
     border-radius: 7px;
     border-top-left-radius: 2px;
     border-bottom-left-radius: 2px;
-    padding: 6px 5px;
-    min-width: 28px;
-    max-width: 32px;
+    padding: 0px;
+    min-width: 34px;
+    max-width: 34px;
+}
+
+/* QToolButton already renders the DownArrow set by the app. Hide the
+   platform menu indicator so the split button never displays two arrows. */
+#sendRouteButton::menu-indicator {
+    image: none;
+    width: 0px;
+    height: 0px;
 }
 
 #sendRouteButton:hover {

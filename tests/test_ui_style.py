@@ -25,3 +25,10 @@ def test_windows_style_preserves_lavender_identity_and_split_send_control():
     assert "border-top-right-radius: 2px" in WINDOWS11_STYLE
     assert "border-top-left-radius: 2px" in WINDOWS11_STYLE
     assert "#sendButton, #toolbarPrimary" in WINDOWS11_STYLE
+
+
+def test_send_route_button_has_one_centered_indicator_and_matching_width():
+    assert "min-width: 34px" in WINDOWS11_STYLE
+    assert "max-width: 34px" in WINDOWS11_STYLE
+    assert "#sendRouteButton::menu-indicator" in WINDOWS11_STYLE
+    assert "image: none" in WINDOWS11_STYLE

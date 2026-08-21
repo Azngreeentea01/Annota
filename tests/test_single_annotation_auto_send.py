@@ -47,9 +47,7 @@ def test_single_annotation_auto_send_skips_review(monkeypatch):
     main._annota_auto_send_or_review(overlay)
 
     assert overlay.review_calls == 0
-    assert overlay.finishedCapture.calls == [
-        ("capture.png", "annotation notes", "capture.json")
-    ]
+    assert overlay.finishedCapture.calls == [("capture.png", "annotation notes", "capture.json")]
     assert overlay.closed
     assert applied == [True]
     assert cleared == [True]
@@ -81,9 +79,7 @@ def test_multiple_annotations_can_skip_review_when_enabled(monkeypatch):
     main._annota_auto_send_or_review(overlay)
 
     assert overlay.review_calls == 0
-    assert overlay.finishedCapture.calls == [
-        ("capture.png", "annotation notes", "capture.json")
-    ]
+    assert overlay.finishedCapture.calls == [("capture.png", "annotation notes", "capture.json")]
     assert overlay.closed
     assert applied == [True]
     assert cleared == [True]

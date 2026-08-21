@@ -16,7 +16,16 @@ SUPPORTED_TARGETS = (
 TARGET_ORDER = tuple(route for route, _label in SUPPORTED_TARGETS)
 TARGET_LABELS = dict(SUPPORTED_TARGETS)
 
-_BROWSER_EXECUTABLES = {"arc.exe", "brave.exe", "chrome.exe", "firefox.exe", "msedge.exe", "opera.exe", "opera_gx.exe", "vivaldi.exe"}
+_BROWSER_EXECUTABLES = {
+    "arc.exe",
+    "brave.exe",
+    "chrome.exe",
+    "firefox.exe",
+    "msedge.exe",
+    "opera.exe",
+    "opera_gx.exe",
+    "vivaldi.exe",
+}
 
 _WINDOWS_EXECUTABLES = {
     "codex": {"codex.exe", "codex-app.exe"},
@@ -67,7 +76,16 @@ def classify_windows_target(title: str, executable: str = "") -> str | None:
     for route in TARGET_ORDER:
         if exe_name in _WINDOWS_EXECUTABLES[route]:
             return route
-    for token, route in (("codex", "codex"), ("chatgpt", "chatgpt"), ("claude", "claude"), ("cursor", "cursor"), ("vscode", "vscode"), ("visual studio code", "vscode"), ("windsurf", "windsurf"), ("opencode", "opencode")):
+    for token, route in (
+        ("codex", "codex"),
+        ("chatgpt", "chatgpt"),
+        ("claude", "claude"),
+        ("cursor", "cursor"),
+        ("vscode", "vscode"),
+        ("visual studio code", "vscode"),
+        ("windsurf", "windsurf"),
+        ("opencode", "opencode"),
+    ):
         if token in title_l:
             return route
     return None
@@ -85,17 +103,30 @@ def _same_target(left: dict, right: dict) -> bool:
     return any(left.get(key) and left.get(key) == right.get(key) for key in ("hwnd", "pid"))
 
 
-def choose_target_record(targets: Iterable[dict], route: str | None = None, source_target: dict | None = None) -> dict | None:
-    """Choose a destination. Manual selections are locked; auto uses capture source first."""
+def choose_target_record(
+    targets: Iterable[dict], route: str | None = None, source_target: dict | None = None
+) -> dict | None:
+    """Choose a destination. Manual selections are locked; auto uses capture source first.
+
+    Auto mode first tries the exact source window/process. If that window was
+    recreated (common with Electron apps), it next prefers another live window
+    for the same supported app before falling back to the stable global order.
+    """
     if route == "clipboard":
         return None
     candidates = [dict(item) for item in targets if item.get("route") in TARGET_ORDER]
     if not is_auto_route(route):
         return next((item for item in candidates if item.get("route") == route), None)
+
     source = dict(source_target or {})
-    for item in candidates:
-        if item.get("route") == source.get("route") and _same_target(item, source):
-            return item
+    source_route = source.get("route")
+    if source_route in TARGET_ORDER:
+        for item in candidates:
+            if item.get("route") == source_route and _same_target(item, source):
+                return item
+        if match := next((item for item in candidates if item.get("route") == source_route), None):
+            return match
+
     for wanted in TARGET_ORDER:
         if match := next((item for item in candidates if item.get("route") == wanted), None):
             return match

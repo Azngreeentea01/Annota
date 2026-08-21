@@ -3,11 +3,11 @@ from pathlib import Path
 import main
 
 
-def test_classifies_codex_view_in_chatgpt_desktop():
+def test_classifies_codex_app():
     assert (
         main.classify_chat_window(
             "Codex - Annota",
-            r"C:\Program Files\WindowsApps\OpenAI.ChatGPT\ChatGPT.exe",
+            r"C:\Program Files\Codex\Codex.exe",
         )
         == "codex"
     )
@@ -19,17 +19,17 @@ def test_classifies_chatgpt_desktop():
             "Project chat",
             r"C:\Program Files\WindowsApps\OpenAI.ChatGPT\ChatGPT.exe",
         )
-        == "chatgpt_desktop"
+        == "chatgpt"
     )
 
 
-def test_classifies_chatgpt_web_browser():
+def test_browser_tabs_are_not_supported_send_targets():
     assert (
         main.classify_chat_window(
             "ChatGPT - Google Chrome",
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         )
-        == "chatgpt_web"
+        is None
     )
 
 
@@ -43,21 +43,20 @@ def test_unrelated_browser_is_not_chat_target():
     )
 
 
-def test_auto_route_prioritizes_codex_even_if_listed_last():
+def test_auto_route_prioritizes_codex_when_capture_source_is_not_supported():
     targets = [
-        {"hwnd": 101, "route": "chatgpt_web"},
-        {"hwnd": 202, "route": "chatgpt_desktop"},
+        {"hwnd": 202, "route": "chatgpt"},
         {"hwnd": 303, "route": "codex"},
     ]
     assert main.choose_chat_target(targets) == 303
 
 
-def test_route_override_can_choose_web():
+def test_route_override_can_choose_chatgpt():
     targets = [
         {"hwnd": 303, "route": "codex"},
-        {"hwnd": 101, "route": "chatgpt_web"},
+        {"hwnd": 101, "route": "chatgpt"},
     ]
-    assert main.choose_chat_target(targets, "chatgpt_web") == 101
+    assert main.choose_chat_target(targets, "chatgpt") == 101
 
 
 def test_clipboard_override_returns_no_window():

@@ -136,9 +136,7 @@ def test_selected_route_carries_into_review_and_only_review_commits_it():
 
     preview = QPixmap(640, 360)
     preview.fill()
-    review = main.ReviewCard(
-        [main.Annotation(1, (10, 20, 100, 80), "Fix alignment")], preview
-    )
+    review = main.ReviewCard([main.Annotation(1, (10, 20, 100, 80), "Fix alignment")], preview)
     sent = []
     review.sendRequested.connect(lambda: sent.append(True))
 
@@ -168,9 +166,7 @@ def test_review_can_reset_manual_route_back_to_auto_send():
     assert main._PENDING_SEND_ROUTE == "cursor"
 
     auto_action = next(
-        action
-        for action in route.menu().actions()
-        if action.text() == "Auto Send (Recommended)"
+        action for action in route.menu().actions() if action.text() == "Auto Send (Recommended)"
     )
     auto_action.trigger()
 
@@ -197,9 +193,7 @@ def test_v022_review_gate_and_session_reset_source_contract():
     core_source = (Path(__file__).resolve().parents[1] / "annota_core.py").read_text(
         encoding="utf-8"
     )
-    entry_source = (Path(__file__).resolve().parents[1] / "main.py").read_text(
-        encoding="utf-8"
-    )
+    entry_source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
     assert main.APP_VERSION == "0.2.2"
     assert "def closeEvent(self, event):" in core_source
     assert "_clear_pending_send_route()" in core_source

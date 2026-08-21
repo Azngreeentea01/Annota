@@ -314,9 +314,7 @@ def _settings_init_with_multi_review_option(self, settings, parent=None) -> None
         "Skip Review and Auto Send when multiple annotations are ready"
     )
     self.skip_review_multiple.setObjectName("skipReviewMultiple")
-    self.skip_review_multiple.setChecked(
-        settings.value(SKIP_MULTI_REVIEW_KEY, False, type=bool)
-    )
+    self.skip_review_multiple.setChecked(settings.value(SKIP_MULTI_REVIEW_KEY, False, type=bool))
     self.skip_review_multiple.setToolTip(
         "When enabled, Auto Send immediately sends two or more annotations without opening Review. The Review button still opens Review manually."
     )
