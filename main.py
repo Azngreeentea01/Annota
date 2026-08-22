@@ -13,7 +13,15 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QDialog, QMenu, QSizePolicy, QToolButton
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QMenu,
+    QPushButton,
+    QSizePolicy,
+    QToolButton,
+)
 
 import annota_core as core
 from target_routing import (
@@ -34,6 +42,11 @@ _ORIGINAL_BUILD_PAYLOAD = core.AnnotationOverlay._build_payload
 _ORIGINAL_SETTINGS_INIT = core.SettingsDialog.__init__
 _ORIGINAL_SETTINGS_SAVE = core.SettingsDialog._save
 _ORIGINAL_ACTIVATE_ANNOTATION = core.AnnotaApp.activate_annotation
+_ORIGINAL_NOTECARD_INIT = core.NoteCard.__init__
+_ORIGINAL_REVIEWCARD_INIT = core.ReviewCard.__init__
+_ORIGINAL_COMMIT_PENDING_NOTE = core.AnnotationOverlay._commit_pending_note
+_ORIGINAL_PAINT_EVENT = core.AnnotationOverlay.paintEvent
+_ORIGINAL_REVIEW_PREVIEW = core.AnnotationOverlay._make_review_preview
 SKIP_MULTI_REVIEW_KEY = "behavior/skip_review_multiple"
 INCLUDE_AI_INSTRUCTION_KEY = "behavior/include_ai_instruction"
 DEFAULT_SEND_ROUTE_KEY = "behavior/default_send_route"
@@ -103,7 +116,10 @@ def _active_window_context() -> tuple[str, str]:
 
 
 def _activate_annotation_with_source(self, force: bool = False):
-    """Capture the foreground app before any overlay/UI can steal focus."""
+    """Capture the source before overlay focus, or resume a paused session."""
+    if self.overlay and not self.overlay.isVisible() and self.overlay.annotations:
+        _resume_annotation_session(self.overlay)
+        return
     if not (self.overlay and self.overlay.isVisible()):
         target = _capture_source_target()
         core._ANNOTA_CAPTURE_SOURCE_TARGET = target
@@ -214,11 +230,6 @@ def _add_send_route_menu(root, send_button=None):
         action.triggered.connect(
             lambda _checked=False, r=route, b=send_button: _set_pending_send_route(r, b)
         )
-    menu.addSeparator()
-    copy_action = menu.addAction("Copy for manual paste")
-    copy_action.triggered.connect(
-        lambda _checked=False, b=send_button: _set_pending_send_route("clipboard", b)
-    )
     route_button.setMenu(menu)
     layout.insertWidget(layout.indexOf(send_button) + 1, route_button, 0, core.Qt.AlignVCenter)
     root.setProperty("annotaRouteMenuAdded", True)
@@ -282,6 +293,9 @@ def _build_payload_clean_message(self):
     if self.settings.value(INCLUDE_AI_INSTRUCTION_KEY, False, type=bool):
         lines.extend(["", AI_IMPLEMENTATION_INSTRUCTION])
     clean_message = "\n".join(lines)
+    composite = _render_session_composite(self)
+    if composite is not None:
+        composite.save(image_path, "PNG")
     Path(image_path).with_suffix(".txt").write_text(clean_message, encoding="utf-8")
     return image_path, clean_message, meta_path
 
@@ -290,17 +304,232 @@ def _default_send_route(settings) -> str | None:
     route = str(settings.value(DEFAULT_SEND_ROUTE_KEY, "auto") or "auto")
     if route == "auto":
         return None
-    if route == "clipboard" or route in TARGET_ORDER:
+    if route in TARGET_ORDER:
         return route
     return None
 
 
+def _note_card_init_with_manual_paste(self, number: int, parent=None) -> None:
+    _ORIGINAL_NOTECARD_INIT(self, number, parent)
+    send_button = next(
+        (b for b in self.findChildren(core.QPushButton) if b.objectName() == "sendButton"), None
+    )
+    if send_button is not None:
+
+        def manual_from_note():
+            if not self._note_text():
+                return
+            core._PENDING_SEND_ROUTE = "clipboard"
+            self._review()
+
+        _add_manual_paste_button(self, send_button, manual_from_note)
+
+
+def _review_card_init_with_manual_paste(self, annotations, preview, parent=None) -> None:
+    _ORIGINAL_REVIEWCARD_INIT(self, annotations, preview, parent)
+    send_button = next(
+        (b for b in self.findChildren(core.QPushButton) if b.objectName() == "sendButton"), None
+    )
+    if send_button is not None:
+
+        def manual_from_review():
+            core._PENDING_SEND_ROUTE = "clipboard"
+            self._request_send()
+
+        _add_manual_paste_button(self, send_button, manual_from_review)
+
+
+def _commit_pending_note_with_frame(self, note: str) -> bool:
+    if not self.pending_rect:
+        return False
+    frame = {
+        "frame_id": getattr(self, "_annota_current_frame_id", 0),
+        "snapshot": self.snapshot.copy(),
+        "rect": core.QRect(self.pending_rect),
+        "dpr": float(self.dpr),
+        "screen_geometry": core.QRect(self.screen_geometry),
+    }
+    committed = _ORIGINAL_COMMIT_PENDING_NOTE(self, note)
+    if committed:
+        self._annota_annotation_frames.append(frame)
+        self.update()
+    return committed
+
+
+def _paint_event_current_frame(self, event) -> None:
+    frames = getattr(self, "_annota_annotation_frames", [])
+    if not frames or not self.annotations:
+        _ORIGINAL_PAINT_EVENT(self, event)
+        return
+    current_id = getattr(self, "_annota_current_frame_id", 0)
+    original_annotations = self.annotations
+    self.annotations = [
+        ann
+        for ann, frame in zip(original_annotations, frames, strict=True)
+        if frame.get("frame_id") == current_id
+    ]
+    try:
+        _ORIGINAL_PAINT_EVENT(self, event)
+    finally:
+        self.annotations = original_annotations
+
+
+def _render_session_composite(self) -> core.QPixmap | None:
+    frames = getattr(self, "_annota_annotation_frames", [])
+    if not frames or len(frames) != len(self.annotations):
+        return None
+    padding_pct = int(self.settings.value("behavior/context_padding", 15))
+    rendered = []
+    max_width = 1
+    total_height = 0
+    gap = 18
+    for ann, frame in zip(self.annotations, frames, strict=True):
+        rect = core.QRect(frame["rect"])
+        dpr = float(frame["dpr"] or 1.0)
+        snapshot = frame["snapshot"]
+        logical_bounds = core.QRect(
+            0, 0, round(snapshot.width() / dpr), round(snapshot.height() / dpr)
+        )
+        pad_x = max(24, int(rect.width() * padding_pct / 100))
+        pad_y = max(24, int(rect.height() * padding_pct / 100))
+        crop = rect.adjusted(-pad_x, -pad_y, pad_x, pad_y).intersected(logical_bounds)
+        device_crop = core.QRect(
+            round(crop.x() * dpr),
+            round(crop.y() * dpr),
+            max(1, round(crop.width() * dpr)),
+            max(1, round(crop.height() * dpr)),
+        )
+        piece = snapshot.copy(device_crop)
+        painter = core.QPainter(piece)
+        local = rect.translated(-crop.topLeft())
+        draw_rect = core.QRect(
+            round(local.x() * dpr),
+            round(local.y() * dpr),
+            max(1, round(local.width() * dpr)),
+            max(1, round(local.height() * dpr)),
+        )
+        painter.setPen(core.QPen(core.QColor(core.LAVENDER_DARK), max(3, round(4 * dpr))))
+        painter.setBrush(core.Qt.NoBrush)
+        painter.drawRoundedRect(draw_rect, round(6 * dpr), round(6 * dpr))
+        marker_size = max(26, round(27 * dpr))
+        marker = core.QRect(
+            draw_rect.left() - marker_size // 2,
+            draw_rect.top() - marker_size // 2,
+            marker_size,
+            marker_size,
+        )
+        painter.setBrush(core.QColor(core.LAVENDER_DARK))
+        painter.setPen(core.Qt.NoPen)
+        painter.drawEllipse(marker)
+        painter.setPen(core.QColor("white"))
+        font = painter.font()
+        font.setBold(True)
+        font.setPixelSize(max(12, round(13 * dpr)))
+        painter.setFont(font)
+        painter.drawText(marker, core.Qt.AlignCenter, str(ann.index))
+        painter.end()
+        rendered.append(piece)
+        max_width = max(max_width, piece.width())
+        total_height += piece.height()
+    total_height += gap * max(0, len(rendered) - 1)
+    canvas = core.QPixmap(max_width, total_height)
+    canvas.fill(core.QColor("white"))
+    painter = core.QPainter(canvas)
+    y = 0
+    for piece in rendered:
+        painter.drawPixmap((max_width - piece.width()) // 2, y, piece)
+        y += piece.height() + gap
+    painter.end()
+    return canvas
+
+
+def _make_review_preview_session(self):
+    return _render_session_composite(self) or _ORIGINAL_REVIEW_PREVIEW(self)
+
+
 def _overlay_init_with_direct_auto_send(self, settings) -> None:
     _ORIGINAL_OVERLAY_INIT(self, settings)
+    self._annota_annotation_frames = []
+    self._annota_current_frame_id = 0
     _set_pending_send_route(_default_send_route(settings), self.send_btn)
     with suppress(Exception):
         self.send_btn.clicked.disconnect()
     self.send_btn.clicked.connect(lambda: _auto_send_or_review(self))
+    _add_manual_paste_button(self, self.send_btn, lambda: _manual_paste_overlay(self))
+
+
+def _manual_paste_overlay(overlay) -> None:
+    if not overlay.annotations:
+        return
+    core._PENDING_SEND_ROUTE = "clipboard"
+    _send_overlay_without_review(overlay)
+
+
+def _add_manual_paste_button(root, send_button, callback) -> QPushButton | None:
+    parent = send_button.parentWidget()
+    layout = core._find_layout_containing(parent.layout() if parent else None, send_button)
+    if layout is None:
+        layout = core._find_layout_containing(root.layout(), send_button)
+    if layout is None:
+        return None
+    button = QPushButton("Manual Paste", parent or root)
+    button.setObjectName("secondaryButton")
+    button.setToolTip("Copy the annotation image and notes for you to paste manually.")
+    button.clicked.connect(callback)
+    route_button = getattr(root, "_annota_route_button", None)
+    anchor = (
+        route_button
+        if route_button is not None and layout.indexOf(route_button) >= 0
+        else send_button
+    )
+    layout.insertWidget(layout.indexOf(anchor) + 1, button, 0, core.Qt.AlignVCenter)
+    root._annota_manual_paste_button = button
+    return button
+
+
+def _pause_annotation_session(self) -> None:
+    """Hide the overlay while preserving the current annotation session."""
+    if self.note_card and self.pending_rect:
+        note = self.note_card.editor.toPlainText().strip()
+        if note:
+            self._commit_pending_note(note)
+    if self.review_card:
+        self.review_card.hide()
+    if self.note_card:
+        self.note_card.hide()
+    self.toolbar.hide()
+    self.hide()
+    self.mode = "select"
+    self.setCursor(core.Qt.CrossCursor)
+    core._diagnostic_event("annotation_session_paused", annotation_count=len(self.annotations))
+
+
+def _resume_annotation_session(self) -> None:
+    """Refresh the desktop snapshot and resume a paused annotation session."""
+    self.screen = (
+        core.QGuiApplication.screenAt(core.QCursor.pos()) or core.QGuiApplication.primaryScreen()
+    )
+    self.snapshot = self.screen.grabWindow(0)
+    self.screen_geometry = self.screen.geometry()
+    self.dpr = float(self.screen.devicePixelRatio() or 1.0)
+    self.setGeometry(self.screen_geometry)
+    self._annota_current_frame_id = getattr(self, "_annota_current_frame_id", 0) + 1
+    self.pending_rect = None
+    self.current_rect = None
+    self.mode = "select"
+    self.setCursor(core.Qt.CrossCursor)
+    self.show()
+    self.raise_()
+    self.activateWindow()
+    core._diagnostic_event("annotation_session_resumed", annotation_count=len(self.annotations))
+
+
+def _overlay_keypress_with_pause(self, event) -> None:
+    if event.key() == core.Qt.Key_Escape:
+        _pause_annotation_session(self)
+        event.accept()
+        return
+    core.AnnotationOverlay._annota_original_keypress(self, event)
 
 
 def _settings_init_with_options(self, settings, parent=None) -> None:
@@ -329,7 +558,6 @@ def _settings_init_with_options(self, settings, parent=None) -> None:
     self.default_send_route.addItem("Auto Send (Recommended)", "auto")
     for route, label in SUPPORTED_TARGETS:
         self.default_send_route.addItem(label, route)
-    self.default_send_route.addItem("Copy for manual paste", "clipboard")
     saved_route = str(settings.value(DEFAULT_SEND_ROUTE_KEY, "auto") or "auto")
     saved_index = self.default_send_route.findData(saved_route)
     self.default_send_route.setCurrentIndex(saved_index if saved_index >= 0 else 0)
@@ -382,7 +610,15 @@ def _install_routing_extension() -> None:
     core._annota_default_send_route_key = DEFAULT_SEND_ROUTE_KEY
     core._default_send_route = _default_send_route
     core.AnnotaApp.activate_annotation = _activate_annotation_with_source
+    if not hasattr(core.AnnotationOverlay, "_annota_original_keypress"):
+        core.AnnotationOverlay._annota_original_keypress = core.AnnotationOverlay.keyPressEvent
+    core.NoteCard.__init__ = _note_card_init_with_manual_paste
+    core.ReviewCard.__init__ = _review_card_init_with_manual_paste
     core.AnnotationOverlay.__init__ = _overlay_init_with_direct_auto_send
+    core.AnnotationOverlay._commit_pending_note = _commit_pending_note_with_frame
+    core.AnnotationOverlay.paintEvent = _paint_event_current_frame
+    core.AnnotationOverlay._make_review_preview = _make_review_preview_session
+    core.AnnotationOverlay.keyPressEvent = _overlay_keypress_with_pause
     core.AnnotationOverlay._save_and_review = _save_and_auto_send
     core.AnnotationOverlay._build_payload = _build_payload_clean_message
     core.SettingsDialog.__init__ = _settings_init_with_options

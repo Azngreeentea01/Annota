@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 cd "$(dirname "$0")"
 
-VERSION="0.2.5"
+VERSION="0.2.6"
 VENV=".venv-macos"
 PYTHON="$VENV/bin/python"
 STAGE="startup"

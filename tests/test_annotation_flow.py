@@ -83,10 +83,14 @@ def test_send_menu_contains_exact_supported_app_list():
         "Visual Studio Code",
         "Windsurf",
         "OpenCode",
+        "Cline",
+        "Roo Code",
+        "GitHub Copilot",
+        "Gemini",
     ]
     assert labels[0] == "Auto Send (Recommended)"
-    assert labels[1:8] == supported
-    assert labels[-1] == "Copy for manual paste"
+    assert labels[1:] == supported
+    assert "Copy for manual paste" not in labels
     assert "Send to ChatGPT web" not in labels
     assert "Send to ChatGPT desktop" not in labels
     card.close()
@@ -194,7 +198,7 @@ def test_v022_review_gate_and_session_reset_source_contract():
         encoding="utf-8"
     )
     entry_source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
-    assert main.APP_VERSION == "0.2.5"
+    assert main.APP_VERSION == "0.2.6"
     assert "def closeEvent(self, event):" in core_source
     assert "_clear_pending_send_route()" in core_source
     assert "if not self.review_card or not self.review_card.isVisible():" in core_source
