@@ -79,7 +79,7 @@ except ImportError:  # pragma: no cover
 
 APP_NAME = "Annota"
 ORG_NAME = "SoftWify"
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.2.3"
 LAVENDER = "#B9A7FF"
 LAVENDER_DARK = "#8E68F4"
 MIN_SELECTION = 18

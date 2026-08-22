@@ -90,7 +90,7 @@ def test_macos_github_runner_qa_contract_and_no_artifact_storage():
     assert "actions/setup-python@v6" in workflow
     assert 'python-version: "3.13"' in workflow
     assert "requirements-dev.txt" in workflow
-    assert "pyproject.toml" in workflow
+    assert "\n  push:" not in workflow
     assert "ruff check main.py tests tools" in workflow
     assert "ruff format --check main.py tests tools" in workflow
     assert "Compile native macOS hotkey helper" in workflow

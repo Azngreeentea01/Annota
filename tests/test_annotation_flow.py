@@ -194,7 +194,7 @@ def test_v022_review_gate_and_session_reset_source_contract():
         encoding="utf-8"
     )
     entry_source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
-    assert main.APP_VERSION == "0.2.2"
+    assert main.APP_VERSION == "0.2.3"
     assert "def closeEvent(self, event):" in core_source
     assert "_clear_pending_send_route()" in core_source
     assert "if not self.review_card or not self.review_card.isVisible():" in core_source

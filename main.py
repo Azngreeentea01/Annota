@@ -27,17 +27,19 @@ from target_routing import (
 )
 from ui_style import build_app_style
 
-# Keep the existing lavender identity, but layer modern Windows 11/Fluent
-# visual rules on Windows only. macOS and other platforms keep the base theme.
 core.APP_STYLE = build_app_style(core.APP_STYLE)
 
-_ORIGINAL_PASTE_SHORTCUT = core.paste_shortcut
-_ORIGINAL_SEND_TO_CURRENT_CHAT = core.AnnotaApp._send_to_current_chat
 _ORIGINAL_OVERLAY_INIT = core.AnnotationOverlay.__init__
+_ORIGINAL_BUILD_PAYLOAD = core.AnnotationOverlay._build_payload
 _ORIGINAL_SETTINGS_INIT = core.SettingsDialog.__init__
 _ORIGINAL_SETTINGS_SAVE = core.SettingsDialog._save
-_SEND_SESSION = {"active": False, "paste_count": 0, "controller": None}
+_ORIGINAL_ACTIVATE_ANNOTATION = core.AnnotaApp.activate_annotation
 SKIP_MULTI_REVIEW_KEY = "behavior/skip_review_multiple"
+INCLUDE_AI_INSTRUCTION_KEY = "behavior/include_ai_instruction"
+AI_IMPLEMENTATION_INSTRUCTION = (
+    "Use the highlighted regions as the visual source of truth. Inspect the relevant code, "
+    "implement these fixes, build and test locally, and visually verify the result."
+)
 
 
 def _windows_frontmost_target() -> dict:
@@ -66,20 +68,53 @@ def _windows_frontmost_target() -> dict:
         return {}
 
 
-def _active_window_context() -> tuple[str, str]:
+def _capture_source_target() -> dict:
     if core.is_macos():
-        target = core.macos_frontmost_app()
+        target = dict(core.macos_frontmost_app() or {})
         target["route"] = classify_macos_target(target)
-        core._ANNOTA_CAPTURE_SOURCE_TARGET = target
+        return target
+    if os.name == "nt":
+        return _windows_frontmost_target()
+    return {}
+
+
+def _source_context(target: dict) -> tuple[str, str]:
+    if core.is_macos():
         return target.get("name", "macOS"), "Active macOS app"
-    if os.name != "nt":
-        core._ANNOTA_CAPTURE_SOURCE_TARGET = {}
-        return core.platform.system(), "Active desktop window"
-    target = _windows_frontmost_target()
-    core._ANNOTA_CAPTURE_SOURCE_TARGET = target
     executable = str(target.get("executable", ""))
     process_name = Path(executable).name if executable else f"PID {target.get('pid', 0)}"
     return process_name, target.get("title", "Unknown window")
+
+
+def _active_window_context() -> tuple[str, str]:
+    """Return the source captured before the overlay took focus.
+
+    The overlay constructor calls this function after annotation activation has
+    already begun. Re-querying the foreground window here can therefore record
+    Annota or another transient window instead of the app the user was using.
+    """
+    preserved = dict(getattr(core, "_ANNOTA_CAPTURE_SOURCE_TARGET", {}) or {})
+    if preserved:
+        return _source_context(preserved)
+    target = _capture_source_target()
+    core._ANNOTA_CAPTURE_SOURCE_TARGET = target
+    return _source_context(target)
+
+
+def _activate_annotation_with_source(self, force: bool = False):
+    """Capture the foreground app before any overlay/UI can steal focus."""
+    if not (self.overlay and self.overlay.isVisible()):
+        target = _capture_source_target()
+        core._ANNOTA_CAPTURE_SOURCE_TARGET = target
+        self.last_source_target = dict(target)
+        core._diagnostic_event(
+            "capture_source_recorded",
+            route=target.get("route"),
+            pid=target.get("pid"),
+            hwnd=target.get("hwnd"),
+            title=target.get("title", target.get("name", "")),
+        )
+    return _ORIGINAL_ACTIVATE_ANNOTATION(self, force)
 
 
 def _classify_macos_app(target: dict) -> str | None:
@@ -125,7 +160,6 @@ def _send_button_label(route: str | None = None) -> str:
 
 
 def _set_pending_send_route(route: str | None, send_button) -> None:
-    """Set the current send mode and refresh one send control from routing state."""
     selected_route = None if route in (None, "auto") else route
     core._PENDING_SEND_ROUTE = selected_route
     send_button.setText(target_label(selected_route))
@@ -190,72 +224,6 @@ def _add_send_route_menu(root, send_button=None):
     root._annota_route_button = route_button
 
 
-def _submit_shortcut() -> tuple[bool, str]:
-    """Submit the populated composer after both payload paste operations succeed."""
-    if core.is_macos():
-        try:
-            import Quartz
-
-            enter_key_code = 36
-            key_down = Quartz.CGEventCreateKeyboardEvent(None, enter_key_code, True)
-            key_up = Quartz.CGEventCreateKeyboardEvent(None, enter_key_code, False)
-            if key_down is None or key_up is None:
-                return False, "macOS could not create a Return key event"
-            Quartz.CGEventPost(Quartz.kCGHIDEventTap, key_down)
-            Quartz.CGEventPost(Quartz.kCGHIDEventTap, key_up)
-            return True, ""
-        except Exception as exc:
-            return False, f"macOS submit event failed: {exc}"
-
-    if core.keyboard is None:
-        return False, "Keyboard backend unavailable"
-    try:
-        controller = core.keyboard.Controller()
-        controller.press(core.keyboard.Key.enter)
-        controller.release(core.keyboard.Key.enter)
-        return True, ""
-    except Exception as exc:
-        return False, f"Submit shortcut failed: {exc}"
-
-
-def _finish_auto_send() -> None:
-    if not _SEND_SESSION["active"] or _SEND_SESSION["paste_count"] < 2:
-        return
-    controller = _SEND_SESSION.get("controller")
-    _SEND_SESSION["active"] = False
-    ok, error = _submit_shortcut()
-    if controller is None:
-        return
-    if ok:
-        controller._show_toast(
-            "Annotation sent",
-            "Annota inserted the screenshot and notes, then submitted them to the selected chat.",
-            4200,
-        )
-    else:
-        controller._show_toast(
-            "Ready, but not submitted",
-            f"The screenshot and notes were inserted, but Annota could not press Send: {error}. Press Enter/Return to send them.",
-            6500,
-        )
-
-
-def _paste_shortcut_with_auto_submit() -> tuple[bool, str]:
-    ok, error = _ORIGINAL_PASTE_SHORTCUT()
-    if ok and _SEND_SESSION["active"]:
-        _SEND_SESSION["paste_count"] += 1
-        if _SEND_SESSION["paste_count"] == 2:
-            core.QTimer.singleShot(220, _finish_auto_send)
-    return ok, error
-
-
-def _send_to_current_chat_with_auto_submit(self, image_path: str, message: str):
-    _SEND_SESSION.update(active=True, paste_count=0, controller=self)
-    _ORIGINAL_SEND_TO_CURRENT_CHAT(self, image_path, message)
-    # A failed/fallback send never reaches two successful paste operations.
-    core.QTimer.singleShot(10000, lambda: _SEND_SESSION.update(active=False))
-
-
 def _skip_multi_review_enabled(overlay) -> bool:
     settings = getattr(overlay, "settings", None)
     if settings is None:
@@ -264,7 +232,6 @@ def _skip_multi_review_enabled(overlay) -> bool:
 
 
 def _send_overlay_without_review(overlay) -> None:
-    """Build and emit the current annotation payload without opening Review."""
     if not overlay.annotations:
         return
     core._apply_pending_send_route()
@@ -282,7 +249,6 @@ def _send_overlay_without_review(overlay) -> None:
 
 
 def _auto_send_or_review(overlay) -> None:
-    """Direct-send one annotation, or multiple when the user opts to skip Review."""
     count = len(overlay.annotations)
     if count == 0:
         return
@@ -299,16 +265,34 @@ def _save_and_auto_send(self, note: str) -> None:
     _auto_send_or_review(self)
 
 
+def _build_payload_clean_message(self):
+    """Remove machine metadata from chat text and optionally append the AI instruction."""
+    image_path, message, meta_path = _ORIGINAL_BUILD_PAYLOAD(self)
+    hidden_prefixes = ("Application:", "Window:", "Display:", "DPI scale:", "Timestamp:")
+    lines = []
+    for line in message.splitlines():
+        if line.startswith(hidden_prefixes):
+            continue
+        if line.strip() == AI_IMPLEMENTATION_INSTRUCTION:
+            continue
+        lines.append(line)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if self.settings.value(INCLUDE_AI_INSTRUCTION_KEY, False, type=bool):
+        lines.extend(["", AI_IMPLEMENTATION_INSTRUCTION])
+    clean_message = "\n".join(lines)
+    Path(image_path).with_suffix(".txt").write_text(clean_message, encoding="utf-8")
+    return image_path, clean_message, meta_path
+
+
 def _overlay_init_with_direct_auto_send(self, settings) -> None:
     _ORIGINAL_OVERLAY_INIT(self, settings)
-    # Review remains an explicit preview action. Auto Send follows the
-    # configured fast path; the Review button is never bypassed.
     with suppress(Exception):
         self.send_btn.clicked.disconnect()
     self.send_btn.clicked.connect(lambda: _auto_send_or_review(self))
 
 
-def _settings_init_with_multi_review_option(self, settings, parent=None) -> None:
+def _settings_init_with_options(self, settings, parent=None) -> None:
     _ORIGINAL_SETTINGS_INIT(self, settings, parent)
     self.skip_review_multiple = QCheckBox(
         "Skip Review and Auto Send when multiple annotations are ready"
@@ -316,22 +300,33 @@ def _settings_init_with_multi_review_option(self, settings, parent=None) -> None
     self.skip_review_multiple.setObjectName("skipReviewMultiple")
     self.skip_review_multiple.setChecked(settings.value(SKIP_MULTI_REVIEW_KEY, False, type=bool))
     self.skip_review_multiple.setToolTip(
-        "When enabled, Auto Send immediately sends two or more annotations without opening Review. The Review button still opens Review manually."
+        "When enabled, Auto Send immediately inserts two or more annotations without opening Review."
     )
+    self.include_ai_instruction = QCheckBox(
+        "Include AI implementation instruction with annotation notes"
+    )
+    self.include_ai_instruction.setObjectName("includeAiInstruction")
+    self.include_ai_instruction.setChecked(
+        settings.value(INCLUDE_AI_INSTRUCTION_KEY, False, type=bool)
+    )
+    self.include_ai_instruction.setToolTip(AI_IMPLEMENTATION_INSTRUCTION)
+
     behavior_parent = self.start_login.parentWidget()
     if behavior_parent is not None and behavior_parent.layout() is not None:
         layout = behavior_parent.layout()
         clear_index = layout.indexOf(self.clear_after)
         insert_at = clear_index + 1 if clear_index >= 0 else layout.count()
         layout.insertWidget(insert_at, self.skip_review_multiple)
+        layout.insertWidget(insert_at + 1, self.include_ai_instruction)
 
 
-def _settings_save_with_multi_review_option(self) -> None:
+def _settings_save_with_options(self) -> None:
     _ORIGINAL_SETTINGS_SAVE(self)
     if self.result() == QDialog.DialogCode.Accepted:
+        self.settings.setValue(SKIP_MULTI_REVIEW_KEY, self.skip_review_multiple.isChecked())
         self.settings.setValue(
-            SKIP_MULTI_REVIEW_KEY,
-            self.skip_review_multiple.isChecked(),
+            INCLUDE_AI_INSTRUCTION_KEY,
+            self.include_ai_instruction.isChecked(),
         )
 
 
@@ -347,21 +342,20 @@ def _install_routing_extension() -> None:
     core._send_button_label = _send_button_label
     core._set_pending_send_route = _set_pending_send_route
     core._add_send_route_menu = _add_send_route_menu
-    core._annota_submit_shortcut = _submit_shortcut
     core._annota_auto_send_or_review = _auto_send_or_review
     core._annota_skip_multi_review_key = SKIP_MULTI_REVIEW_KEY
-    core.paste_shortcut = _paste_shortcut_with_auto_submit
-    core.AnnotaApp._send_to_current_chat = _send_to_current_chat_with_auto_submit
+    core._annota_include_ai_instruction_key = INCLUDE_AI_INSTRUCTION_KEY
+    core._annota_ai_implementation_instruction = AI_IMPLEMENTATION_INSTRUCTION
+    core.AnnotaApp.activate_annotation = _activate_annotation_with_source
     core.AnnotationOverlay.__init__ = _overlay_init_with_direct_auto_send
     core.AnnotationOverlay._save_and_review = _save_and_auto_send
-    core.SettingsDialog.__init__ = _settings_init_with_multi_review_option
-    core.SettingsDialog._save = _settings_save_with_multi_review_option
+    core.AnnotationOverlay._build_payload = _build_payload_clean_message
+    core.SettingsDialog.__init__ = _settings_init_with_options
+    core.SettingsDialog._save = _settings_save_with_options
 
 
 _install_routing_extension()
 
-# When imported by tests or tooling, expose the patched core module directly so
-# monkeypatching and private route-state assertions continue to work normally.
 if __name__ != "__main__":
     sys.modules[__name__] = core
 else:

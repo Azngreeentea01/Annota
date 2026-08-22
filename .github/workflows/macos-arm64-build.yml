@@ -2,20 +2,6 @@ name: macOS ARM64 Build
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - main.py
-      - requirements.txt
-      - requirements-dev.txt
-      - pyproject.toml
-      - build_macos.sh
-      - release_macos.sh
-      - assets/**
-      - tools/**
-      - tests/**
-      - .github/workflows/macos-arm64-build.yml
 
 permissions:
   contents: write
@@ -25,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ANNOTA_VERSION: "0.2.2"
+  ANNOTA_VERSION: "0.2.3"
   VENV: ".venv-macos"
 
 jobs:
