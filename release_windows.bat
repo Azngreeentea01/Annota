@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-set "VERSION=0.2.8"
+set "VERSION=0.2.9"
 set "RELEASE_DIR=releases\v%VERSION%"
 set "STAGE=%RELEASE_DIR%\Annota-v%VERSION%-Windows-x64"
 set "ZIP=%RELEASE_DIR%\Annota-v%VERSION%-Windows-x64.zip"

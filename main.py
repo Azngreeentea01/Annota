@@ -49,6 +49,7 @@ _ORIGINAL_REVIEWCARD_INIT = core.ReviewCard.__init__
 _ORIGINAL_COMMIT_PENDING_NOTE = core.AnnotationOverlay._commit_pending_note
 _ORIGINAL_PAINT_EVENT = core.AnnotationOverlay.paintEvent
 _ORIGINAL_REVIEW_PREVIEW = core.AnnotationOverlay._make_review_preview
+_ORIGINAL_SHOW_NOTE_CARD = core.AnnotationOverlay._show_note_card
 _ORIGINAL_OVERLAY_SEND = core.AnnotationOverlay._send
 SKIP_MULTI_REVIEW_KEY = "behavior/skip_review_multiple"
 INCLUDE_AI_INSTRUCTION_KEY = "behavior/include_ai_instruction"
@@ -354,10 +355,13 @@ def _reset_completed_session(overlay) -> None:
     core._diagnostic_event("annotation_session_completed")
 
 
-def _send_overlay_without_review(overlay) -> None:
+def _send_overlay_without_review(overlay, force_route: str | None = None) -> None:
     if not overlay.annotations:
         return
-    core._apply_pending_send_route()
+    if force_route is None:
+        core._apply_pending_send_route()
+    else:
+        core._SEND_ROUTE_OVERRIDE = force_route
     path, message, meta_path = overlay._build_payload()
     core._diagnostic_event(
         "payload_ready",
@@ -437,13 +441,30 @@ def _note_card_init_with_manual_paste(self, number: int, parent=None) -> None:
     if send_button is not None:
 
         def manual_from_note():
-            if not self._note_text():
-                return
-            core._PENDING_SEND_ROUTE = "clipboard"
-            self._review()
+            note = self._note_text()
+            if note:
+                self.manualPasteRequested.emit(note)
 
         _add_manual_paste_button(self, send_button, manual_from_note)
         _style_approved_note_card(self, send_button)
+
+
+def _save_and_manual_paste(self, note: str) -> None:
+    """Commit the current note and finish the session immediately via clipboard."""
+    if not self._commit_pending_note(note):
+        return
+    core._PENDING_SEND_ROUTE = "clipboard"
+    self.toolbar.hide()
+    _send_overlay_without_review(self, force_route="clipboard")
+
+
+def _show_note_card_with_manual_paste(self) -> None:
+    _ORIGINAL_SHOW_NOTE_CARD(self)
+    if self.note_card is not None:
+        with suppress(Exception):
+            self.note_card.manualPasteRequested.connect(
+                lambda note: _save_and_manual_paste(self, note)
+            )
 
 
 def _review_card_init_with_manual_paste(self, annotations, preview, parent=None) -> None:
@@ -584,7 +605,7 @@ def _manual_paste_overlay(overlay) -> None:
     if not overlay.annotations:
         return
     core._PENDING_SEND_ROUTE = "clipboard"
-    _send_overlay_without_review(overlay)
+    _send_overlay_without_review(overlay, force_route="clipboard")
 
 
 def _add_manual_paste_button(root, send_button, callback) -> QPushButton | None:
@@ -735,12 +756,14 @@ def _install_routing_extension() -> None:
     core._annota_default_send_route_key = DEFAULT_SEND_ROUTE_KEY
     core._default_send_route = _default_send_route
     core._reset_completed_session = _reset_completed_session
+    core._send_overlay_without_review = _send_overlay_without_review
     core.AnnotaApp.activate_annotation = _activate_annotation_with_source
     if not hasattr(core.AnnotationOverlay, "_annota_original_keypress"):
         core.AnnotationOverlay._annota_original_keypress = core.AnnotationOverlay.keyPressEvent
     core.NoteCard.__init__ = _note_card_init_with_manual_paste
     core.ReviewCard.__init__ = _review_card_init_with_manual_paste
     core.AnnotationOverlay.__init__ = _overlay_init_with_direct_auto_send
+    core.AnnotationOverlay._show_note_card = _show_note_card_with_manual_paste
     core.AnnotationOverlay._commit_pending_note = _commit_pending_note_with_frame
     core.AnnotationOverlay.paintEvent = _paint_event_current_frame
     core.AnnotationOverlay._make_review_preview = _make_review_preview_session

@@ -79,7 +79,7 @@ except ImportError:  # pragma: no cover
 
 APP_NAME = "Annota"
 ORG_NAME = "SoftWify"
-APP_VERSION = "0.2.8"
+APP_VERSION = "0.2.9"
 LAVENDER = "#B9A7FF"
 LAVENDER_DARK = "#8E68F4"
 MIN_SELECTION = 18
@@ -241,6 +241,7 @@ class StatusToast(QFrame):
 class NoteCard(QFrame):
     newAnnotationRequested = Signal(str)
     reviewRequested = Signal(str)
+    manualPasteRequested = Signal(str)
     cancelRequested = Signal()
 
     def __init__(self, number: int, parent=None):

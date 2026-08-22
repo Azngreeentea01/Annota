@@ -114,7 +114,7 @@ def test_native_hotkey_swift_source_contract():
 
 def test_macos_runtime_reliability_source_contract():
     source = (ROOT / "annota_core.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "0.2.8"' in source
+    assert 'APP_VERSION = "0.2.9"' in source
     assert "self.tray_menu = QMenu()" in source
     assert "CGPreflightScreenCaptureAccess" in source
     assert "AXIsProcessTrusted" in source
