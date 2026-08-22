@@ -69,10 +69,21 @@ def target_description(route: str | None) -> str:
 
 
 def classify_windows_target(title: str, executable: str = "") -> str | None:
+    """Classify a supported Windows destination from its process and window title.
+
+    Browsers are special: the executable identifies only the browser, so an
+    active ChatGPT web tab is recognized from the top-level browser window
+    title. Other browser pages are deliberately ignored to avoid sending an
+    annotation to an unrelated tab.
+    """
     title_l = (title or "").strip().lower()
     exe_name = (executable or "").strip().lower().replace("\\", "/").rsplit("/", 1)[-1]
+
     if exe_name in _BROWSER_EXECUTABLES:
+        if "chatgpt" in title_l or "chatgpt.com" in title_l:
+            return "chatgpt"
         return None
+
     for route in TARGET_ORDER:
         if exe_name in _WINDOWS_EXECUTABLES[route]:
             return route

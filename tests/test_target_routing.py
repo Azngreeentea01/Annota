@@ -43,7 +43,7 @@ def test_route_labels_and_descriptions_match_send_mode():
     assert target_description("clipboard") == "Copy annotation for manual paste."
 
 
-def test_windows_classification_supports_all_apps_and_rejects_browser_tabs():
+def test_windows_classification_supports_all_apps_and_chatgpt_web():
     cases = {
         r"C:\\Apps\\Codex.exe": "codex",
         r"C:\\Apps\\ChatGPT.exe": "chatgpt",
@@ -55,7 +55,15 @@ def test_windows_classification_supports_all_apps_and_rejects_browser_tabs():
     }
     for executable, expected in cases.items():
         assert classify_windows_target("Project", executable) == expected
-    assert classify_windows_target("ChatGPT - Google Chrome", r"C:\\Chrome\\chrome.exe") is None
+
+    for executable in (
+        r"C:\\Chrome\\chrome.exe",
+        r"C:\\Firefox\\firefox.exe",
+        r"C:\\Edge\\msedge.exe",
+    ):
+        assert classify_windows_target("ChatGPT - browser", executable) == "chatgpt"
+        assert classify_windows_target("chatgpt.com - browser", executable) == "chatgpt"
+        assert classify_windows_target("GitHub - browser", executable) is None
 
 
 def test_macos_classification_supports_all_apps():
@@ -89,6 +97,17 @@ def test_auto_send_prefers_app_active_when_capture_started():
         {"hwnd": 22, "pid": 222, "route": "cursor"},
     ]
     assert choose_target_record(targets, None, source)["hwnd"] == 22
+
+
+def test_auto_send_prefers_active_chatgpt_web_over_other_supported_apps():
+    source = {"hwnd": 44, "pid": 444, "route": "chatgpt"}
+    targets = [
+        {"hwnd": 11, "pid": 111, "route": "codex"},
+        {"hwnd": 44, "pid": 444, "route": "chatgpt"},
+    ]
+    selected = choose_target_record(targets, None, source)
+    assert selected["route"] == "chatgpt"
+    assert selected["hwnd"] == 44
 
 
 def test_auto_send_keeps_source_app_when_its_window_is_recreated():
