@@ -13,6 +13,8 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
+from PySide6.QtCore import QSize
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -50,6 +52,11 @@ _ORIGINAL_REVIEW_PREVIEW = core.AnnotationOverlay._make_review_preview
 SKIP_MULTI_REVIEW_KEY = "behavior/skip_review_multiple"
 INCLUDE_AI_INSTRUCTION_KEY = "behavior/include_ai_instruction"
 DEFAULT_SEND_ROUTE_KEY = "behavior/default_send_route"
+TARGET_ICON_DIR = core.ASSET_DIR / "targets"
+CANCEL_ICON_PATH = core.ASSET_DIR / "cancel.svg"
+NEW_ANNOTATION_ICON_PATH = core.ASSET_DIR / "new_annotation.svg"
+MANUAL_PASTE_ICON_PATH = core.ASSET_DIR / "manual_paste.svg"
+
 AI_IMPLEMENTATION_INSTRUCTION = (
     "Use the highlighted regions as the visual source of truth. Inspect the relevant code, "
     "implement these fixes, build and test locally, and visually verify the result."
@@ -176,6 +183,64 @@ def _send_button_label(route: str | None = None) -> str:
     return target_label(route)
 
 
+def _target_icon(route: str) -> QIcon:
+    path = TARGET_ICON_DIR / f"{route}.svg"
+    return QIcon(str(path)) if path.exists() else QIcon()
+
+
+def _style_approved_note_card(card, send_button) -> None:
+    """Match the approved wide Note Card proportions without clipping at high DPI."""
+    card.setFixedWidth(820)
+    if card.layout() is not None:
+        card.layout().setContentsMargins(24, 22, 24, 22)
+        card.layout().setSpacing(14)
+
+    editor = getattr(card, "editor", None)
+    if editor is not None:
+        editor.setFixedHeight(110)
+
+    buttons = {button.text().strip(): button for button in card.findChildren(core.QPushButton)}
+    cancel = buttons.get("Cancel")
+    new_annotation = buttons.get("+ New Annotation")
+    if cancel is not None:
+        cancel.setText("Cancel")
+        cancel.setFixedSize(112, 48)
+        if CANCEL_ICON_PATH.exists():
+            cancel.setIcon(QIcon(str(CANCEL_ICON_PATH)))
+            cancel.setIconSize(QSize(21, 21))
+    if new_annotation is not None:
+        new_annotation.setText("New Annotation")
+        new_annotation.setFixedSize(178, 48)
+        if NEW_ANNOTATION_ICON_PATH.exists():
+            new_annotation.setIcon(QIcon(str(NEW_ANNOTATION_ICON_PATH)))
+            new_annotation.setIconSize(QSize(22, 22))
+
+    send_button.setFixedSize(158, 48)
+    send_button.setIconSize(QSize(22, 22))
+    route_button = getattr(card, "_annota_route_button", None)
+    if route_button is not None:
+        route_button.setFixedSize(46, 48)
+
+    manual = getattr(card, "_annota_manual_paste_button", None)
+    if manual is not None:
+        manual.setFixedSize(150, 48)
+        manual.setObjectName("manualPasteButton")
+        if MANUAL_PASTE_ICON_PATH.exists():
+            manual.setIcon(QIcon(str(MANUAL_PASTE_ICON_PATH)))
+            manual.setIconSize(QSize(21, 21))
+
+    row = core._find_layout_containing(card.layout(), send_button)
+    if row is not None:
+        # The old 430px card used a stretch spacer; remove it so the approved
+        # five-control row remains evenly aligned instead of crushing labels.
+        for index in range(row.count() - 1, -1, -1):
+            item = row.itemAt(index)
+            if item.spacerItem() is not None:
+                row.takeAt(index)
+        row.setSpacing(12)
+        row.setAlignment(core.Qt.AlignHCenter | core.Qt.AlignVCenter)
+
+
 def _set_pending_send_route(route: str | None, send_button) -> None:
     selected_route = None if route in (None, "auto") else route
     core._PENDING_SEND_ROUTE = selected_route
@@ -220,13 +285,27 @@ def _add_send_route_menu(root, send_button=None):
     route_button.setFixedHeight(max(34, send_button.sizeHint().height()))
 
     menu = QMenu(route_button)
-    auto_action = menu.addAction("Auto Send (Recommended)")
+    menu.setObjectName("sendRouteMenu")
+    menu.setMinimumWidth(286)
+    header = menu.addAction("Send to")
+    header.setEnabled(False)
+    menu.addSeparator()
+    auto_action = menu.addAction(QIcon(str(core.SEND_ICON_PATH)), "Auto Send")
     auto_action.triggered.connect(
         lambda _checked=False, b=send_button: _set_pending_send_route(None, b)
     )
     menu.addSeparator()
-    for route, label in SUPPORTED_TARGETS:
-        action = menu.addAction(label)
+    primary_routes = ("chatgpt", "codex", "claude", "cursor", "vscode", "windsurf", "opencode")
+    secondary_routes = ("cline", "roo_code", "github_copilot", "gemini")
+    labels = dict(SUPPORTED_TARGETS)
+    for route in primary_routes:
+        action = menu.addAction(_target_icon(route), labels[route])
+        action.triggered.connect(
+            lambda _checked=False, r=route, b=send_button: _set_pending_send_route(r, b)
+        )
+    menu.addSeparator()
+    for route in secondary_routes:
+        action = menu.addAction(_target_icon(route), labels[route])
         action.triggered.connect(
             lambda _checked=False, r=route, b=send_button: _set_pending_send_route(r, b)
         )
@@ -323,6 +402,7 @@ def _note_card_init_with_manual_paste(self, number: int, parent=None) -> None:
             self._review()
 
         _add_manual_paste_button(self, send_button, manual_from_note)
+        _style_approved_note_card(self, send_button)
 
 
 def _review_card_init_with_manual_paste(self, annotations, preview, parent=None) -> None:
@@ -473,7 +553,10 @@ def _add_manual_paste_button(root, send_button, callback) -> QPushButton | None:
     if layout is None:
         return None
     button = QPushButton("Manual Paste", parent or root)
-    button.setObjectName("secondaryButton")
+    button.setObjectName("manualPasteButton")
+    if MANUAL_PASTE_ICON_PATH.exists():
+        button.setIcon(QIcon(str(MANUAL_PASTE_ICON_PATH)))
+        button.setIconSize(QSize(21, 21))
     button.setToolTip("Copy the annotation image and notes for you to paste manually.")
     button.clicked.connect(callback)
     route_button = getattr(root, "_annota_route_button", None)

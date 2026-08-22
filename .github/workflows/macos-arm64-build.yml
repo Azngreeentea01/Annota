@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ANNOTA_VERSION: "0.2.6"
+  ANNOTA_VERSION: "0.2.7"
   VENV: ".venv-macos"
 
 jobs:

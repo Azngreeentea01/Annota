@@ -46,7 +46,7 @@ def test_note_card_new_annotation_saves_comment_without_sending():
     card.reviewRequested.connect(reviews.append)
     card.editor.setPlainText("Move this button left")
 
-    _button(card, "+ New Annotation").click()
+    _button(card, "New Annotation").click()
 
     assert new_notes == ["Move this button left"]
     assert reviews == []
@@ -75,9 +75,11 @@ def test_send_menu_contains_exact_supported_app_list():
     card = main.NoteCard(1)
     route = _route_button(card)
     labels = [action.text() for action in route.menu().actions() if action.text()]
-    supported = [
-        "Codex",
+    assert labels == [
+        "Send to",
+        "Auto Send",
         "ChatGPT",
+        "Codex",
         "Claude",
         "Cursor",
         "Visual Studio Code",
@@ -88,11 +90,7 @@ def test_send_menu_contains_exact_supported_app_list():
         "GitHub Copilot",
         "Gemini",
     ]
-    assert labels[0] == "Auto Send (Recommended)"
-    assert labels[1:] == supported
     assert "Copy for manual paste" not in labels
-    assert "Send to ChatGPT web" not in labels
-    assert "Send to ChatGPT desktop" not in labels
     card.close()
 
 
@@ -169,9 +167,7 @@ def test_review_can_reset_manual_route_back_to_auto_send():
     assert send.toolTip() == "Send only to Cursor."
     assert main._PENDING_SEND_ROUTE == "cursor"
 
-    auto_action = next(
-        action for action in route.menu().actions() if action.text() == "Auto Send (Recommended)"
-    )
+    auto_action = next(action for action in route.menu().actions() if action.text() == "Auto Send")
     auto_action.trigger()
 
     auto_send = _button(review, "Auto Send")
@@ -198,7 +194,7 @@ def test_v022_review_gate_and_session_reset_source_contract():
         encoding="utf-8"
     )
     entry_source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
-    assert main.APP_VERSION == "0.2.6"
+    assert main.APP_VERSION == "0.2.7"
     assert "def closeEvent(self, event):" in core_source
     assert "_clear_pending_send_route()" in core_source
     assert "if not self.review_card or not self.review_card.isVisible():" in core_source

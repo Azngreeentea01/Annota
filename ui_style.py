@@ -281,6 +281,93 @@ QMenu::separator {
     margin: 5px 8px;
 }
 
+
+
+/* Approved annotation card visual pass */
+#noteCard {
+    background: #FFFFFF;
+    border: 1px solid #7650E8;
+    border-radius: 18px;
+}
+
+#noteTitle {
+    color: #5F38D4;
+    font-size: 13pt;
+    font-weight: 700;
+}
+
+#hint {
+    color: #5F5A66;
+    font-size: 10pt;
+}
+
+#noteCard #secondaryButton, #manualPasteButton {
+    background: #FFFFFF;
+    color: #18161B;
+    border: 1px solid #D4CFDC;
+    border-radius: 10px;
+    padding: 0 14px;
+    min-height: 46px;
+    font-size: 10.5pt;
+    font-weight: 550;
+}
+
+#noteCard #secondaryButton:hover, #manualPasteButton:hover {
+    background: #F7F4FD;
+    border-color: #BFB4D7;
+}
+
+#noteCard #sendButton {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7650E8, stop:1 #6D42DC);
+    color: #FFFFFF;
+    border: 1px solid #6843D8;
+    border-radius: 10px;
+    border-top-right-radius: 3px;
+    border-bottom-right-radius: 3px;
+    padding: 0 16px;
+    min-height: 46px;
+    font-size: 11pt;
+    font-weight: 700;
+}
+
+#noteCard #sendRouteButton {
+    background: #7650E8;
+    color: #FFFFFF;
+    border: 1px solid #6843D8;
+    border-left-color: #876BE6;
+    border-radius: 10px;
+    border-top-left-radius: 3px;
+    border-bottom-left-radius: 3px;
+    padding: 0;
+    min-width: 46px;
+    max-width: 46px;
+}
+
+#sendRouteMenu {
+    background: #FFFFFF;
+    border: 1px solid #D8D2E2;
+    border-radius: 10px;
+    padding: 7px;
+    font-size: 10.5pt;
+}
+
+#sendRouteMenu::item {
+    min-height: 24px;
+    padding: 8px 34px 8px 10px;
+    border-radius: 7px;
+}
+
+#sendRouteMenu::item:selected {
+    background: #F0E9FF;
+    color: #5730C8;
+}
+
+#sendRouteMenu::separator {
+    height: 1px;
+    background: #E9E4EF;
+    margin: 6px 9px;
+}
+
 QToolTip {
     background: #25222A;
     color: #FFFFFF;
