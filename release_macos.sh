@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 cd "$(dirname "$0")"
 
-VERSION="0.2.3"
+VERSION="0.2.5"
 ARCH="$(uname -m)"
 RELEASE_DIR="releases/v$VERSION"
 STAGE="$RELEASE_DIR/Annota-v$VERSION-macOS-$ARCH"

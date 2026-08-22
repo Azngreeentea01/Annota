@@ -17,6 +17,10 @@ def test_supported_target_order_is_exact():
         "vscode",
         "windsurf",
         "opencode",
+        "cline",
+        "roo_code",
+        "github_copilot",
+        "gemini",
     )
 
 
@@ -35,6 +39,10 @@ def test_route_labels_and_descriptions_match_send_mode():
         ("vscode", "Visual Studio Code"),
         ("windsurf", "Windsurf"),
         ("opencode", "OpenCode"),
+        ("cline", "Cline"),
+        ("roo_code", "Roo Code"),
+        ("github_copilot", "GitHub Copilot"),
+        ("gemini", "Gemini"),
     ):
         assert target_label(route) == "Send"
         assert target_description(route) == f"Send only to {label}."
@@ -52,6 +60,10 @@ def test_windows_classification_supports_all_apps_and_chatgpt_web():
         r"C:\\Apps\\Code.exe": "vscode",
         r"C:\\Apps\\Windsurf.exe": "windsurf",
         r"C:\\Apps\\OpenCode.exe": "opencode",
+        r"C:\\Apps\\Cline.exe": "cline",
+        r"C:\\Apps\\Roo-Code.exe": "roo_code",
+        r"C:\\Apps\\GitHub-Copilot.exe": "github_copilot",
+        r"C:\\Apps\\Gemini.exe": "gemini",
     }
     for executable, expected in cases.items():
         assert classify_windows_target("Project", executable) == expected
@@ -64,6 +76,22 @@ def test_windows_classification_supports_all_apps_and_chatgpt_web():
         assert classify_windows_target("ChatGPT - browser", executable) == "chatgpt"
         assert classify_windows_target("chatgpt.com - browser", executable) == "chatgpt"
         assert classify_windows_target("GitHub - browser", executable) is None
+
+
+def test_editor_extension_titles_win_over_vscode_host():
+    code = r"C:\\Apps\\Code.exe"
+    assert classify_windows_target("Cline - Visual Studio Code", code) == "cline"
+    assert classify_windows_target("Roo Code - Visual Studio Code", code) == "roo_code"
+    assert classify_windows_target("GitHub Copilot - Visual Studio Code", code) == "github_copilot"
+    assert classify_windows_target("Gemini - Visual Studio Code", code) == "gemini"
+
+
+def test_browser_classification_supports_gemini_and_github_copilot():
+    chrome = r"C:\\Chrome\\chrome.exe"
+    assert classify_windows_target("Gemini", chrome) == "gemini"
+    assert classify_windows_target("gemini.google.com - Google Chrome", chrome) == "gemini"
+    assert classify_windows_target("GitHub Copilot - Google Chrome", chrome) == "github_copilot"
+    assert classify_windows_target("GitHub - Google Chrome", chrome) is None
 
 
 def test_macos_classification_supports_all_apps():
@@ -119,6 +147,21 @@ def test_auto_send_keeps_source_app_when_its_window_is_recreated():
     selected = choose_target_record(targets, None, source)
     assert selected["route"] == "opencode"
     assert selected["hwnd"] == 77
+
+
+def test_manual_extension_route_can_use_generic_vscode_host():
+    targets = [{"hwnd": 55, "pid": 555, "route": "vscode"}]
+    for route in ("cline", "roo_code", "github_copilot", "gemini"):
+        selected = choose_target_record(targets, route, None)
+        assert selected is not None
+        assert selected["hwnd"] == 55
+
+
+def test_cline_manual_route_can_use_cursor_or_windsurf_host():
+    cursor = [{"hwnd": 66, "pid": 666, "route": "cursor"}]
+    windsurf = [{"hwnd": 77, "pid": 777, "route": "windsurf"}]
+    assert choose_target_record(cursor, "cline", None)["hwnd"] == 66
+    assert choose_target_record(windsurf, "cline", None)["hwnd"] == 77
 
 
 def test_auto_send_falls_back_to_stable_priority_when_source_is_not_supported():

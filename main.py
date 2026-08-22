@@ -13,7 +13,7 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
-from PySide6.QtWidgets import QCheckBox, QDialog, QMenu, QSizePolicy, QToolButton
+from PySide6.QtWidgets import QCheckBox, QComboBox, QDialog, QMenu, QSizePolicy, QToolButton
 
 import annota_core as core
 from target_routing import (
@@ -36,6 +36,7 @@ _ORIGINAL_SETTINGS_SAVE = core.SettingsDialog._save
 _ORIGINAL_ACTIVATE_ANNOTATION = core.AnnotaApp.activate_annotation
 SKIP_MULTI_REVIEW_KEY = "behavior/skip_review_multiple"
 INCLUDE_AI_INSTRUCTION_KEY = "behavior/include_ai_instruction"
+DEFAULT_SEND_ROUTE_KEY = "behavior/default_send_route"
 AI_IMPLEMENTATION_INSTRUCTION = (
     "Use the highlighted regions as the visual source of truth. Inspect the relevant code, "
     "implement these fixes, build and test locally, and visually verify the result."
@@ -285,8 +286,18 @@ def _build_payload_clean_message(self):
     return image_path, clean_message, meta_path
 
 
+def _default_send_route(settings) -> str | None:
+    route = str(settings.value(DEFAULT_SEND_ROUTE_KEY, "auto") or "auto")
+    if route == "auto":
+        return None
+    if route == "clipboard" or route in TARGET_ORDER:
+        return route
+    return None
+
+
 def _overlay_init_with_direct_auto_send(self, settings) -> None:
     _ORIGINAL_OVERLAY_INIT(self, settings)
+    _set_pending_send_route(_default_send_route(settings), self.send_btn)
     with suppress(Exception):
         self.send_btn.clicked.disconnect()
     self.send_btn.clicked.connect(lambda: _auto_send_or_review(self))
@@ -310,12 +321,30 @@ def _settings_init_with_options(self, settings, parent=None) -> None:
         settings.value(INCLUDE_AI_INSTRUCTION_KEY, False, type=bool)
     )
     self.include_ai_instruction.setToolTip(AI_IMPLEMENTATION_INSTRUCTION)
+    self.default_send_route = QComboBox()
+    self.default_send_route.setObjectName("defaultSendRoute")
+    self.default_send_route.setToolTip(
+        "Choose the destination Annota should use by default for each new annotation session."
+    )
+    self.default_send_route.addItem("Auto Send (Recommended)", "auto")
+    for route, label in SUPPORTED_TARGETS:
+        self.default_send_route.addItem(label, route)
+    self.default_send_route.addItem("Copy for manual paste", "clipboard")
+    saved_route = str(settings.value(DEFAULT_SEND_ROUTE_KEY, "auto") or "auto")
+    saved_index = self.default_send_route.findData(saved_route)
+    self.default_send_route.setCurrentIndex(saved_index if saved_index >= 0 else 0)
 
     behavior_parent = self.start_login.parentWidget()
     if behavior_parent is not None and behavior_parent.layout() is not None:
         layout = behavior_parent.layout()
         clear_index = layout.indexOf(self.clear_after)
-        insert_at = clear_index + 1 if clear_index >= 0 else layout.count()
+        route_row = core.QHBoxLayout()
+        route_row.addWidget(core.QLabel("Default Send destination"))
+        route_row.addStretch(1)
+        route_row.addWidget(self.default_send_route)
+        route_index = clear_index if clear_index >= 0 else layout.count()
+        layout.insertLayout(route_index, route_row)
+        insert_at = layout.indexOf(self.clear_after) + 1
         layout.insertWidget(insert_at, self.skip_review_multiple)
         layout.insertWidget(insert_at + 1, self.include_ai_instruction)
 
@@ -327,6 +356,10 @@ def _settings_save_with_options(self) -> None:
         self.settings.setValue(
             INCLUDE_AI_INSTRUCTION_KEY,
             self.include_ai_instruction.isChecked(),
+        )
+        self.settings.setValue(
+            DEFAULT_SEND_ROUTE_KEY,
+            self.default_send_route.currentData() or "auto",
         )
 
 
@@ -346,6 +379,8 @@ def _install_routing_extension() -> None:
     core._annota_skip_multi_review_key = SKIP_MULTI_REVIEW_KEY
     core._annota_include_ai_instruction_key = INCLUDE_AI_INSTRUCTION_KEY
     core._annota_ai_implementation_instruction = AI_IMPLEMENTATION_INSTRUCTION
+    core._annota_default_send_route_key = DEFAULT_SEND_ROUTE_KEY
+    core._default_send_route = _default_send_route
     core.AnnotaApp.activate_annotation = _activate_annotation_with_source
     core.AnnotationOverlay.__init__ = _overlay_init_with_direct_auto_send
     core.AnnotationOverlay._save_and_review = _save_and_auto_send

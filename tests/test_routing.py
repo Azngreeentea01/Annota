@@ -23,13 +23,13 @@ def test_classifies_chatgpt_desktop():
     )
 
 
-def test_browser_tabs_are_not_supported_send_targets():
+def test_chatgpt_web_is_a_supported_send_target():
     assert (
         main.classify_chat_window(
             "ChatGPT - Google Chrome",
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         )
-        is None
+        == "chatgpt"
     )
 
 
