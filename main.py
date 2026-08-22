@@ -49,6 +49,7 @@ _ORIGINAL_REVIEWCARD_INIT = core.ReviewCard.__init__
 _ORIGINAL_COMMIT_PENDING_NOTE = core.AnnotationOverlay._commit_pending_note
 _ORIGINAL_PAINT_EVENT = core.AnnotationOverlay.paintEvent
 _ORIGINAL_REVIEW_PREVIEW = core.AnnotationOverlay._make_review_preview
+_ORIGINAL_OVERLAY_SEND = core.AnnotationOverlay._send
 SKIP_MULTI_REVIEW_KEY = "behavior/skip_review_multiple"
 INCLUDE_AI_INSTRUCTION_KEY = "behavior/include_ai_instruction"
 DEFAULT_SEND_ROUTE_KEY = "behavior/default_send_route"
@@ -124,7 +125,12 @@ def _active_window_context() -> tuple[str, str]:
 
 def _activate_annotation_with_source(self, force: bool = False):
     """Capture the source before overlay focus, or resume a paused session."""
-    if self.overlay and not self.overlay.isVisible() and self.overlay.annotations:
+    if (
+        self.overlay
+        and not self.overlay.isVisible()
+        and self.overlay.annotations
+        and not getattr(self.overlay, "_annota_session_completed", False)
+    ):
         _resume_annotation_session(self.overlay)
         return
     if not (self.overlay and self.overlay.isVisible()):
@@ -322,6 +328,32 @@ def _skip_multi_review_enabled(overlay) -> bool:
     return settings.value(SKIP_MULTI_REVIEW_KEY, False, type=bool)
 
 
+def _reset_completed_session(overlay) -> None:
+    """Discard all capture state after Send or Manual Paste completes."""
+    overlay._annota_session_completed = True
+    overlay.annotations.clear()
+    getattr(overlay, "_annota_annotation_frames", []).clear()
+    overlay.pending_rect = None
+    overlay.current_rect = None
+    overlay.drag_start = None
+    overlay.interaction = None
+    overlay.interaction_start = None
+    overlay.interaction_rect = None
+    note_card = getattr(overlay, "note_card", None)
+    if note_card:
+        note_card.close()
+        overlay.note_card = None
+    review_card = getattr(overlay, "review_card", None)
+    if review_card:
+        review_card.close()
+        overlay.review_card = None
+    toolbar = getattr(overlay, "toolbar", None)
+    if toolbar is not None:
+        toolbar.hide()
+    core._ANNOTA_CAPTURE_SOURCE_TARGET = {}
+    core._diagnostic_event("annotation_session_completed")
+
+
 def _send_overlay_without_review(overlay) -> None:
     if not overlay.annotations:
         return
@@ -335,8 +367,17 @@ def _send_overlay_without_review(overlay) -> None:
         review_skipped=True,
     )
     overlay.finishedCapture.emit(path, message, meta_path)
+    _reset_completed_session(overlay)
     core._clear_pending_send_route()
     overlay.close()
+
+
+def _send_review_and_reset(self) -> None:
+    """Keep Review behavior, then clear the completed session after a real send."""
+    sending = bool(self.annotations and self.review_card and self.review_card.isVisible())
+    _ORIGINAL_OVERLAY_SEND(self)
+    if sending:
+        _reset_completed_session(self)
 
 
 def _auto_send_or_review(overlay) -> None:
@@ -531,6 +572,7 @@ def _overlay_init_with_direct_auto_send(self, settings) -> None:
     _ORIGINAL_OVERLAY_INIT(self, settings)
     self._annota_annotation_frames = []
     self._annota_current_frame_id = 0
+    self._annota_session_completed = False
     _set_pending_send_route(_default_send_route(settings), self.send_btn)
     with suppress(Exception):
         self.send_btn.clicked.disconnect()
@@ -692,6 +734,7 @@ def _install_routing_extension() -> None:
     core._annota_ai_implementation_instruction = AI_IMPLEMENTATION_INSTRUCTION
     core._annota_default_send_route_key = DEFAULT_SEND_ROUTE_KEY
     core._default_send_route = _default_send_route
+    core._reset_completed_session = _reset_completed_session
     core.AnnotaApp.activate_annotation = _activate_annotation_with_source
     if not hasattr(core.AnnotationOverlay, "_annota_original_keypress"):
         core.AnnotationOverlay._annota_original_keypress = core.AnnotationOverlay.keyPressEvent
@@ -704,6 +747,7 @@ def _install_routing_extension() -> None:
     core.AnnotationOverlay.keyPressEvent = _overlay_keypress_with_pause
     core.AnnotationOverlay._save_and_review = _save_and_auto_send
     core.AnnotationOverlay._build_payload = _build_payload_clean_message
+    core.AnnotationOverlay._send = _send_review_and_reset
     core.SettingsDialog.__init__ = _settings_init_with_options
     core.SettingsDialog._save = _settings_save_with_options
 

@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-set "VERSION=0.2.7"
+set "VERSION=0.2.8"
 set "RELEASE_DIR=releases\v%VERSION%"
 set "STAGE=%RELEASE_DIR%\Annota-v%VERSION%-macOS-Build-Kit"
 set "ZIP=%RELEASE_DIR%\Annota-v%VERSION%-macOS-Build-Kit.zip"
